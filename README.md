@@ -1,349 +1,338 @@
-# LidarArray Library Documentation
-## Overview
-LidarArray is an Arduino library designed to manage multiple VL53L0X LiDAR sensors using PCF8574 I/O expanders. This library simplifies the integration and control of LiDAR sensors in Arduino projects, offering flexible configuration options and easy data acquisition.
+# LidarArray 1.1.0
 
-## Installation
-To use the LidarArray library in your Arduino projects:
+Biblioteca para gerenciar arrays de sensores ToF `VL53L0X` ou `VL53L4CD` usando `PCF8574` para controlar os pinos `XSHUT`.
 
-1. Download the LidarArray library from the [GitHub repository](https://github.com/joaoaugustocz/LidarArray) as a ZIP file.
-2. Install the library in the Arduino IDE by navigating to Sketch -> Include Library -> Add .ZIP Library... and selecting the downloaded ZIP file.
-3. Open the LidarArray example sketches from File -> Examples -> LidarArray to get started with using the library.
+Esta versao 1.1.0 foca em:
 
-## Class LidarArray
-### Constructor
+- configuracao minima mais pratica
+- debug nativo em `Print`
+- inicializacao sequencial previsivel
+- organizacao logica dos sensores por software
+- enderecamento manual opcional por sensor
 
-`LidarArray(uint8_t numPCF, uint8_t numSensors, const uint8_t pcf8574Addresses[], const uint8_t xshutPins[][8]);`
+## Dependencias
 
-### Parameters:
+- `VL53L0X` da Pololu
+- `VL53L4CD` da Pololu
 
-- **numPCF**: Number of PCF8574 I/O expanders used.
+O sketch continua responsavel por chamar `Wire.begin()` ou `Wire.begin(SDA, SCL)` antes da inicializacao da biblioteca.
 
-- **numSensors**: Total number of VL53L0X sensors.
+## Header recomendado
 
-- **pcf8574Addresses[]**: Array of I2C addresses for PCF8574 devices.
+Use preferencialmente:
 
-- **xshutPins[][8]**: 2D array of XSHUT pin configurations for each PCF8574 device.
+```cpp
+#include <LidarArray.h>
+```
 
+O wrapper raiz `lidarArray.h` foi mantido apenas por compatibilidade.
 
-### Methods
+## Configuracao minima
 
-`initSensors()`
-Initializes all sensors with default measurement timing.
-
-`initSensors(int measurementT)`
-Initializes all sensors with a custom measurement timing budget.
-
-`initSensors(int measurementT, uint8_t preRange, uint8_t finalRange)`
-Initializes all sensors with custom timing and Vcsel pulse periods.
-
-`initSensors(int measurementT, uint8_t preRange, uint8_t finalRange, int timeout)`
-Initializes sensors with custom timing, Vcsel pulse periods, and timeout.
-
-`readSensor(uint8_t sensorIndex)`
-Reads distance from the specified sensor index in millimeters.
-
-`readSensorNB(uint8_t sensorIndex)`
-Non-blocking read of distance from the specified sensor index.
-
-`getSensor(uint8_t sensorIndex)`
-Returns a reference to the VL53L0X sensor object at the specified index.
-
-`setMeasurementTimingBudget(uint32_t timingBudget)`
-Sets the measurement timing budget for all sensors.
-
-`setVcselPulsePeriod(uint8_t type, uint8_t period)`
-Sets the Vcsel pulse period for all sensors.
-
-`getSensorCount()`
-Returns the total number of sensors initialized.
-
-`pcf8574Write(uint8_t pcf8574Index, uint8_t pin, bool state)`
-Writes a state (HIGH or LOW) to a specific pin on the PCF8574 device.
-
-`readSensorNonBlocking(VL53L0X &sensor)`
-Non-blocking read of distance from a VL53L0X sensor object.
-
-
-
-## Class Vector
-### Methods
-
-`Vector()`
-Default constructor that creates an empty vector.
-
-`Vector(size_t size)`
-Constructor that creates a vector with the specified size.
-
-`Vector(size_t size, const T &value)`
-Constructor that creates a vector with the specified size and initializes all elements with the specified value.
-
-`~Vector()`
-Destructor that frees the allocated memory for the vector.
-
-`size_t size() const`
-Returns the number of elements in the vector.
-
-`bool empty() const`
-Checks if the vector is empty.
-
-`void resize(size_t newSize)`
-Changes the size of the vector to the new specified size.
-
-`void reserve(size_t newCapacity)`
-Reserves space for at least a certain number of elements without modifying the size of the vector.
-
-`void clear()`
-Removes all elements from the vector and frees the allocated memory.
-
-`T &operator[](size_t index)`
-Returns a reference to the element at the specified index.
-
-`const T &operator[](size_t index) const`
-Returns a constant reference to the element at the specified index.
-
-`void push_back(const T &value)`
-Adds an element to the end of the vector.
-
-`void pop_back()`
-Removes the last element from the vector.
-
-`T &front()`
-Returns a reference to the first element of the vector.
-
-`const T &front() const`
-Returns a constant reference to the first element of the vector.
-
-`T &back()`
-Returns a reference to the last element of the vector.
-
-`const T &back() const`
-Returns a constant reference to the last element of the vector.
-
-`T *data()`
-Returns a pointer to the elements of the vector.
-
-`const T *data() const`
-Returns a constant pointer to the elements of the vector.
-
-`iterator begin() noexcept`
-Returns an iterator to the first element of the vector.
-
-`const_iterator begin() const noexcept`
-Returns a constant iterator to the first element of the vector.
-
-`iterator end() noexcept`
-Returns an iterator to the element past the last element of the vector.
-
-`const_iterator end() const noexcept`
-Returns a constant iterator to the element past the last element of the vector.
-
-
-
-## Example Usage
+### VL53L0X com API legada
 
 ```cpp
 #include <LidarArray.h>
 
-uint8_t pcf8574Addresses[] = {0x20}; // I2C addresses of the PCF8574
+uint8_t pcf8574Addresses[] = {0x20};
 uint8_t xshutPins[1][8] = {
-    {0, 1, 2, 3, 4, 5, 6, 8} // XSHUT pins on PCF8574 at address 0x20
+    {0, 1, 2, 3, 4, 5, 6, 7}
 };
 
-LidarArray lidar(1, 8, pcf8574Addresses, xshutPins);
+LidarArray lidar(1, 4, pcf8574Addresses, xshutPins);
 
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
     Wire.begin();
-    delay(1000);
-    lidar.initSensors();
-}
-
-void loop() {
-    for (uint8_t i = 0; i < lidar.getSensorCount(); i++) {
-        uint16_t distance = lidar.readSensor(i);
-        Serial.print("Sensor ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.print(distance);
-        Serial.println(" mm");
-    }
-    delay(100);
+    lidar.initSensors(20000, 14, 10, 100);
 }
 ```
-## License
-This library is released under the MIT License. See the LICENSE file for more details.
 
+Use esse caminho quando quiser manter o fluxo legado de `readSensor()` e `readSensorNB()`.
 
-
-# Documentação da Biblioteca LidarArray
-## Visão Geral
-LidarArray é uma biblioteca para Arduino projetada para gerenciar múltiplos sensores LiDAR VL53L0X utilizando expansores de I/O PCF8574. Esta biblioteca simplifica a integração e controle de sensores LiDAR em projetos Arduino, oferecendo opções de configuração flexíveis e aquisição de dados simplificada.
-
-## Instalação
-Para utilizar a biblioteca LidarArray nos seus projetos Arduino:
-
-1. Baixe a biblioteca LidarArray do [repositório GitHub](https://github.com/joaoaugustocz/LidarArray) como um arquivo ZIP.
-2. Instale a biblioteca no Arduino IDE navegando em Sketch -> Incluir Biblioteca -> Adicionar Biblioteca .ZIP... e selecione o arquivo ZIP baixado.
-3. Abra os exemplos da LidarArray em Arquivo -> Exemplos -> LidarArray para começar a utilizar a biblioteca.
-
-## Classe LidarArray
-### Construtor
-
-`LidarArray(uint8_t numPCF, uint8_t numSensors, const uint8_t pcf8574Addresses[], const uint8_t xshutPins[][8]);`
-
-### Parâmetros:
-
-- **numPCF**: Número de expansores de I/O PCF8574 utilizados.
-
-- **numSensors**: Número total de sensores VL53L0X.
-
-- **pcf8574Addresses[]**: Array de endereços I2C para os dispositivos PCF8574.
-
-- **xshutPins[][8]**: Array 2D de configurações de pinos XSHUT para cada dispositivo PCF8574.
-
-
-### Métodos
-
-`initSensors()`
-Inicializa todos os sensores com o tempo de medição padrão.
-
-`initSensors(int measurementT)`
-Inicializa todos os sensores com um orçamento de tempo de medição personalizado.
-
-`initSensors(int measurementT, uint8_t preRange, uint8_t finalRange)`
-Inicializa todos os sensores com períodos de pulso Vcsel e tempo personalizados.
-
-`initSensors(int measurementT, uint8_t preRange, uint8_t finalRange, int timeout)`
-Inicializa sensores com tempo, períodos de pulso Vcsel e timeout personalizados.
-
-`readSensor(uint8_t sensorIndex)`
-Lê a distância do sensor especificado pelo índice em milímetros.
-
-`readSensorNB(uint8_t sensorIndex)`
-Leitura não bloqueante da distância do sensor especificado.
-
-`getSensor(uint8_t sensorIndex)`
-Retorna uma referência ao objeto do sensor VL53L0X no índice especificado.
-
-`setMeasurementTimingBudget(uint32_t timingBudget)`
-Define o orçamento de tempo de medição para todos os sensores.
-
-`setVcselPulsePeriod(uint8_t type, uint8_t period)`
-Define o período de pulso Vcsel para todos os sensores.
-
-`getSensorCount()`
-Retorna o número total de sensores inicializados.
-
-`pcf8574Write(uint8_t pcf8574Index, uint8_t pin, bool state)`
-Escreve um estado (HIGH ou LOW) para um pino específico no dispositivo PCF8574.
-
-`readSensorNonBlocking(VL53L0X &sensor)`
-Leitura não bloqueante da distância de um objeto sensor VL53L0X.
-
-
-## Classe Vector
-### Métodos
-
-`Vector()`
-Construtor padrão que cria um vetor vazio.
-
-`Vector(size_t size)`
-Construtor que cria um vetor com o tamanho especificado.
-
-`Vector(size_t size, const T &value)`
-Construtor que cria um vetor com o tamanho especificado e inicializa todos os elementos com o valor especificado.
-
-`~Vector()`
-Destrutor que libera a memória alocada para o vetor.
-
-`size_t size() const`
-Retorna o número de elementos no vetor.
-
-`bool empty() const`
-Verifica se o vetor está vazio.
-
-`void resize(size_t newSize)`
-Altera o tamanho do vetor para o novo tamanho especificado.
-
-`void reserve(size_t newCapacity)`
-Reserva espaço para pelo menos uma certa quantidade de elementos sem modificar o tamanho do vetor.
-
-`void clear()`
-Remove todos os elementos do vetor e libera a memória alocada.
-
-`T &operator[](size_t index)`
-Retorna uma referência ao elemento no índice especificado.
-
-`const T &operator[](size_t index) const`
-Retorna uma referência constante ao elemento no índice especificado.
-
-`void push_back(const T &value)`
-Adiciona um elemento ao final do vetor.
-
-`void pop_back()`
-Remove o último elemento do vetor.
-
-`T &front()`
-Retorna uma referência ao primeiro elemento do vetor.
-
-`const T &front() const`
-Retorna uma referência constante ao primeiro elemento do vetor.
-
-`T &back()`
-Retorna uma referência ao último elemento do vetor.
-
-`const T &back() const`
-Retorna uma referência constante ao último elemento do vetor.
-
-`T *data()`
-Retorna um ponteiro para os elementos do vetor.
-
-`const T *data() const`
-Retorna um ponteiro constante para os elementos do vetor.
-
-`iterator begin() noexcept`
-Retorna um iterador para o primeiro elemento do vetor.
-
-`const_iterator begin() const noexcept`
-Retorna um iterador constante para o primeiro elemento do vetor.
-
-`iterator end() noexcept`
-Retorna um iterador para o elemento após o último elemento do vetor.
-
-`const_iterator end() const noexcept`
-Retorna um iterador constante para o elemento após o último elemento do vetor.
-
-
-## Exemplo de Uso
+### VL53L4CD com configuracao curta
 
 ```cpp
 #include <LidarArray.h>
 
-uint8_t pcf8574Addresses[] = {0x20}; // Endereços I2C dos PCF8574
-uint8_t xshutPins[1][8] = {
-    {0, 1, 2, 3, 4, 5, 6, 8} // Pinos XSHUT no PCF8574 no endereço 0x20
-};
+const uint8_t pcf8574Addresses[] = {0x20};
+const uint8_t xshutPins[] = {0, 1, 2, 3, 4, 5, 6, 7};
 
-LidarArray lidar(1, 8, pcf8574Addresses, xshutPins);
+LidarArray tofarr(LidarSensorModel::VL53L4CD);
 
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
     Wire.begin();
-    delay(1000);
-    lidar.initSensors();
-}
 
-void loop() {
-    for (uint8_t i = 0; i < lidar.getSensorCount(); i++) {
-        uint16_t distancia = lidar.readSensor(i);
-        Serial.print("Sensor ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.print(distancia);
-        Serial.println(" mm");
-    }
-    delay(100);
+    tofarr.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    tofarr.setTimeout(100);
+    tofarr.setVL53L4CDTiming(50, 0);
+
+    tofarr.begin();
 }
 ```
-## Licença
-Esta biblioteca é lançada sob a Licença MIT. Consulte o arquivo LICENSE para mais detalhes.
+
+Os campos realmente obrigatorios para começar sao:
+
+- modelo do sensor
+- quantidade de PCF8574
+- quantidade de sensores ativos
+- enderecos dos PCF8574
+- mapa `xshutPins`
+
+O restante pode ficar nos defaults e ser ajustado depois.
+
+### Configurando pela struct
+
+Se preferir guardar a configuracao em uma struct curta:
+
+```cpp
+auto config = LidarArrayConfig::forVL53L4CD(1, 4, pcf8574Addresses, xshutPins);
+config.timeoutMs = 100;
+
+LidarArray tofarr(config);
+```
+
+Tambem e possivel editar a configuracao acumulada antes do `begin()`:
+
+```cpp
+LidarArray tofarr(LidarSensorModel::VL53L4CD);
+
+tofarr.config().numPCF = 1;
+tofarr.config().numSensors = 4;
+tofarr.config().pcf8574Addresses = pcf8574Addresses;
+tofarr.config().xshutPins = xshutPins;
+tofarr.config().timeoutMs = 100;
+tofarr.config().vl53l4cdTimingBudgetMs = 50;
+```
+
+### Enderecos manuais opcionais
+
+Por padrao, a biblioteca usa `0x30 + indice logico`.
+
+Se quiser definir manualmente o endereco final de cada sensor, passe um array com `numSensors` posicoes:
+
+```cpp
+const uint8_t sensorAddresses[] = {0x30, 0x32, 0x34, 0x36};
+
+tofarr.setSensorAddresses(sensorAddresses);
+```
+
+Faça isso antes de chamar `begin()`.
+
+Tambem funciona pela struct:
+
+```cpp
+auto config = LidarArrayConfig::forVL53L4CD(1, 4, pcf8574Addresses, xshutPins);
+config.sensorAddresses = sensorAddresses;
+```
+
+Regras para esse array:
+
+- cada endereco precisa ser unico
+- nao pode colidir com o endereco de nenhum `PCF8574`
+- nao use `0x29`, porque esse e o endereco padrao usado durante a inicializacao sequencial
+- se quiser voltar ao modo automatico, passe `nullptr` em `setSensorAddresses()`
+
+## Como a biblioteca organiza os sensores
+
+### Ordem logica
+
+A ordem logica dos sensores segue a ordem do mapa `xshutPins`.
+
+Exemplo:
+
+```cpp
+const uint8_t xshutPins[] = {
+    0, 1, 2, 3, 4, 5, 6, 7
+};
+```
+
+Nesse caso:
+
+- `readReading(0)` corresponde ao canal `0`
+- `readReading(1)` corresponde ao canal `1`
+- `readReading(2)` corresponde ao canal `2`
+
+Se voce trocar a ordem do mapa, troca tambem a ordem logica dos indices.
+
+### Enderecos I2C finais
+
+Durante a inicializacao, cada sensor e ligado sozinho, inicializado no endereco padrao e depois reenderecado.
+
+Hoje o contrato da biblioteca e:
+
+- sensor ToF padrao antes do reenderecamento: `0x29`
+- modo automatico: enderecos finais `0x30 + indice logico`
+- modo manual: enderecos finais vindos do array configurado em `setSensorAddresses()` ou `config.sensorAddresses`
+
+Exemplo para 4 sensores:
+
+- indice `0` -> `0x30`
+- indice `1` -> `0x31`
+- indice `2` -> `0x32`
+- indice `3` -> `0x33`
+
+Exemplo manual para 4 sensores:
+
+- indice `0` -> `0x30`
+- indice `1` -> `0x32`
+- indice `2` -> `0x34`
+- indice `3` -> `0x36`
+
+Os indices logicos continuam vindo do `xshutPins`. O que muda e apenas o endereco final que cada sensor recebe no barramento.
+
+## Trocar sensores de lugar via software
+
+Nesta versao, “trocar sensor de lugar via software” significa trocar a ordem logica do mapa `xshutPins`, nao mover o hardware.
+
+Exemplo de ordem original:
+
+```cpp
+const uint8_t xshutPins[] = {
+    0, 1, 2, 3, 4, 5, 6, 7
+};
+```
+
+Exemplo de ordem remapeada:
+
+```cpp
+const uint8_t xshutPins[] = {
+    3, 1, 2, 0, 4, 5, 6, 7
+};
+```
+
+Com isso:
+
+- o sensor ligado no canal fisico `3` passa a ser o indice logico `0`
+- o sensor ligado no canal fisico `0` passa a ser o indice logico `3`
+
+Esse remapeio e util quando:
+
+- a instalacao fisica ja esta pronta
+- os sensores foram montados em ordem diferente da desejada
+- voce quer alinhar o indice logico com a geometria do robô sem refazer cabos
+
+## Debug de inicializacao
+
+O debug foi pensado para mostrar o passo a passo do barramento durante o boot.
+
+Exemplo:
+
+```cpp
+LidarArrayDebugConfig debugConfig =
+    LidarArrayDebugConfig::verbose(&Serial, true, true, true, 700, 2500);
+
+lidar.setDebugConfig(debugConfig);
+lidar.begin();
+```
+
+Campos principais:
+
+- `scanBeforeInit`: faz um scan antes de derrubar os ToF
+- `scanEachStep`: faz scan apos cada sensor ser adicionado
+- `bootDelayMs`: pausa antes de comecar a sequencia, util para abrir o monitor serial
+- `animationDelayMs`: pausa entre as etapas de configuracao dos sensores
+
+Comportamento esperado:
+
+1. `scanBeforeInit` mostra o barramento como ele estava antes da biblioteca agir.
+2. Depois do shutdown, o endereco `0x29` deve desaparecer se todos os ToF foram realmente desligados.
+3. A cada sensor inicializado, deve aparecer `0x30`, depois `0x31`, depois `0x32` e assim por diante.
+
+Observacao:
+
+- o delay animado vale para as etapas de configuracao dos sensores
+- o scan I2C em si nao pausa por endereco
+
+## Leitura detalhada
+
+```cpp
+LidarReading reading = lidar.readReading(0, true);
+
+Serial.print(reading.distanceMm);
+Serial.print(" mm, status=");
+Serial.println(reading.status);
+```
+
+Campos de `LidarReading`:
+
+- `distanceMm`: ultima distancia lida
+- `status`: status bruto do sensor ou status interno de indisponibilidade
+- `valid`: leitura valida para uso
+- `timeout`: timeout detectado pelo driver
+- `dataReady`: indica se havia dado pronto na leitura
+- `address`: endereco I2C atribuido ao sensor
+
+## Troubleshooting rapido
+
+### Vejo `0x29` no scan antes da inicializacao
+
+Isso e normal quando algum ToF ainda esta acordado antes da biblioteca assumir o controle.
+
+Esse endereco nao deve ser usado como endereco final manual em `setSensorAddresses()`.
+
+### `0x29` nao some depois do shutdown
+
+Revise:
+
+- mapa `xshutPins`
+- ligacao do `PCF8574`
+- alimentacao dos sensores
+
+### Alguns sensores ficam como `sensor unavailable`
+
+Isso indica falha de inicializacao naquele indice especifico. O restante do array pode continuar funcionando.
+
+Use:
+
+- `getInitializedSensorCount()`
+- `isSensorReady(i)`
+- `scanEachStep`
+
+para descobrir em que ponto a sequencia falhou.
+
+### `status=254`
+
+Esse status e interno da biblioteca e indica sensor nao pronto ou indisponivel para leitura naquele indice.
+
+### PlatformIO continua mostrando codigo antigo
+
+Se o projeto de testes continuar preso em cache:
+
+- apague a pasta `.pio/` do projeto `testes`
+- rode o build novamente
+
+## Exemplos publicos
+
+- `examples/basic`
+  - fluxo legado simples
+- `examples/usingTwoPCF`
+  - dois expansores e numeracao continua
+- `examples/vl53l4cdConfig`
+  - configuracao minima usando a API atual
+- `examples/logicalRemap`
+  - mostra como trocar a ordem logica dos sensores
+- `examples/guidedDebug`
+  - mostra o debug de boot e o scan passo a passo
+- `examples/addressOverview`
+  - mostra como inspecionar os enderecos finais automaticos ou manuais
+
+## Projeto de testes
+
+A validacao manual fica no projeto PlatformIO:
+
+`C:\Users\czjoa\OneDrive\Documentos\Projetos\Bibliotecas\testes`
+
+O foco desta rodada continua sendo o `ESP32-P4` da Waveshare.
+
+## Observacoes finais
+
+- Um `LidarArray` suporta apenas um modelo de sensor por instancia.
+- Sensores alem de `numSensors` permanecem em shutdown.
+- `Vector.h` continua no repositorio, mas nao faz mais parte do fluxo interno.
+- Falhas de inicializacao nao travam o restante do array.
+
+## Licenca
+
+MIT.

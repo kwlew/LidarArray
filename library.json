@@ -1,0 +1,31 @@
+{
+  "name": "LidarArray",
+  "version": "1.1.0",
+  "description": "Library for managing arrays of VL53L0X or VL53L4CD sensors with PCF8574 XSHUT control.",
+  "keywords": [
+    "lidar",
+    "tof",
+    "vl53l0x",
+    "vl53l4cd",
+    "pcf8574",
+    "esp32"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joaoaugustocz/LidarArray/"
+  },
+  "authors": [
+    {
+      "name": "Joao Augusto Carvalho Araujo",
+      "email": "czjoaoaugustocz@gmail.com",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "*"
+  ]
+}

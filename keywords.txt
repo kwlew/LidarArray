@@ -6,24 +6,43 @@
 # Datatypes (KEYWORD1)
 #######################################
 LidarArray  KEYWORD1
-Vector      KEYWORD1
+LidarArrayConfig  KEYWORD1
+LidarArrayDebugConfig  KEYWORD1
+LidarReading  KEYWORD1
+LidarSensorModel  KEYWORD1
+LidarDebugLevel  KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
+begin                       KEYWORD2
 initSensors                 KEYWORD2
 readSensor                  KEYWORD2
 readSensorNB                KEYWORD2
+readReading                 KEYWORD2
 getSensor                   KEYWORD2
+getVL53L0XSensor            KEYWORD2
+getVL53L4CDSensor           KEYWORD2
+config                      KEYWORD2
+debug                       KEYWORD2
+setLayout                   KEYWORD2
+setSensorAddresses          KEYWORD2
+setWire                     KEYWORD2
+setTimeout                  KEYWORD2
+setVL53L4CDTiming           KEYWORD2
 setMeasurementTimingBudget  KEYWORD2
 setVcselPulsePeriod         KEYWORD2
+setDebugConfig              KEYWORD2
+setDebugOutput              KEYWORD2
+setDebugLevel               KEYWORD2
+setDebugScanBeforeInit      KEYWORD2
+setDebugScanEachStep        KEYWORD2
+setDebugBootDelay           KEYWORD2
+setDebugStepDelay           KEYWORD2
 getSensorCount              KEYWORD2
-resize                      KEYWORD2
-push_back                   KEYWORD2
-at                          KEYWORD2
-operator[]                  KEYWORD2
-begin                       KEYWORD2
-end                         KEYWORD2
+getInitializedSensorCount   KEYWORD2
+isSensorReady               KEYWORD2
+scanI2C                     KEYWORD2
 
 #######################################
 # Constants (LITERAL1)
