@@ -1,16 +1,17 @@
-# LidarArray 1.2.0
+# LidarArray
 
 ## English
 
 `LidarArray` is an Arduino library for managing `VL53L0X` or `VL53L4CD` ToF sensor arrays through `PCF8574` expanders that control the `XSHUT` lines.
 
-Version `1.2.0` includes:
+Current codebase includes:
 
 - support for `VL53L0X` and `VL53L4CD`
 - preserved legacy dense `VL53L0X` flow
 - sparse physical mapping through `LidarSensorSlot`
 - public logical sensor IDs and ID-based reads
 - automatic or manual final I2C addressing
+- optional internal filtered reads with median, EMA, hold-last-valid, and jump rejection
 - native I2C scan and step-by-step initialization debug
 - configurable `TwoWire` bus selection
 - English hover documentation in `LidarArray.h`
@@ -222,6 +223,55 @@ Expected sequence:
 
 The public header `LidarArray.h` includes English Doxygen-style comments for the main public types, fields, and methods. In Arduino IDE and PlatformIO, these comments should appear as hover help for the current API.
 
+### Optional Internal Filters
+
+The raw reading path stays unchanged:
+
+- `readSensor()`
+- `readSensorNB()`
+- `readReading()`
+- `readReadingById()`
+
+Filtered reads are opt-in and live in a separate API:
+
+```cpp
+LidarFilterConfig filterConfig = LidarFilterConfig::recommended();
+filterConfig.maxJumpMm = 80;
+
+lidar.setFilterConfig(filterConfig);
+
+LidarFilteredReading filtered = lidar.readFilteredReading(0, true);
+Serial.print("raw=");
+Serial.print(filtered.raw.distanceMm);
+Serial.print(" filtered=");
+Serial.println(filtered.distanceMm);
+```
+
+Main filter features:
+
+- median window `1`, `3`, or `5`
+- EMA smoothing through `emaAlphaPercent`
+- hold-last-valid for invalid reads
+- jump rejection through `maxJumpMm`
+- optional per-sensor overrides with `setSensorFilterConfig(...)`
+
+Recommended starting point for a moving robot:
+
+- `LidarFilterConfig::recommended()`
+- `medianWindow = 3`
+- `emaAlphaPercent = 50`
+- `holdLastValid = true`
+- `maxHeldReads = 2`
+
+Filtered APIs:
+
+- `readFilteredSensor(index)`
+- `readFilteredSensorNB(index)`
+- `readFilteredSensorById(sensorId)`
+- `readFilteredSensorNBById(sensorId)`
+- `readFilteredReading(index, blocking)`
+- `readFilteredReadingById(sensorId, blocking)`
+
 ### Shipped Examples
 
 - `examples/basic`: basic legacy dense `VL53L0X` usage
@@ -238,6 +288,7 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - Sensors above `numSensors` remain in shutdown.
 - `getSensor()` is only for `VL53L0X` compatibility.
 - `readSensor()` and `readSensorNB()` may apply legacy fallback and clamp behavior when legacy mode is active.
+- Filtered reads are optional and do not change the raw behavior of `readSensor()`, `readSensorNB()`, or `readReading()`.
 - `Vector.h` remains in the repository, but the library no longer depends on it internally.
 - Seeing `0x29` before initialization is normal if a ToF sensor is already awake.
 - `status = 254` indicates a library-side not-ready or unavailable condition.
@@ -251,6 +302,8 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - `LidarDebugLevel`: selects the debug verbosity
 - `LidarSensorSlot`: sparse physical slot description
 - `LidarReading`: structured measurement result
+- `LidarFilterConfig`: filter pipeline configuration
+- `LidarFilteredReading`: filtered result with raw and final output values
 - `LidarArrayConfig`: full array configuration
 - `LidarArrayDebugConfig`: initialization and scan debug configuration
 
@@ -264,6 +317,8 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - `LidarArrayConfig::forVL53L4CD(..., xshutPins, wire, sensorAddresses)`
 - `LidarArrayConfig::forVL53L4CD(..., sensorMap, wire)`
 - `LidarArrayDebugConfig::verbose(...)`
+- `LidarFilterConfig::disabled()`
+- `LidarFilterConfig::recommended()`
 
 #### Constructors
 
@@ -285,6 +340,8 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - `config() const`
 - `debug()`
 - `debug() const`
+- `filter()`
+- `filter() const`
 
 #### Configuration Setters
 
@@ -294,6 +351,14 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - `setWire(...)`
 - `setTimeout(...)`
 - `setVL53L4CDTiming(...)`
+- `setFilterConfig(...)`
+- `setSensorFilterConfig(...)`
+- `clearSensorFilterConfig(...)`
+- `clearSensorFilterConfigs()`
+- `hasSensorFilterConfig(index)`
+- `getEffectiveFilterConfig(index)`
+- `resetFilter(index)`
+- `resetFilters()`
 - `setMeasurementTimingBudget(...)`
 - `setVcselPulsePeriod(...)`
 
@@ -305,6 +370,12 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 - `readSensorNBById(sensorId)`
 - `readReading(index, blocking)`
 - `readReadingById(sensorId, blocking)`
+- `readFilteredSensor(index)`
+- `readFilteredSensorNB(index)`
+- `readFilteredSensorById(sensorId)`
+- `readFilteredSensorNBById(sensorId)`
+- `readFilteredReading(index, blocking)`
+- `readFilteredReadingById(sensorId, blocking)`
 
 #### Direct Driver Access
 
@@ -338,13 +409,14 @@ The public header `LidarArray.h` includes English Doxygen-style comments for the
 
 `LidarArray` e uma biblioteca Arduino para gerenciar arrays de sensores ToF `VL53L0X` ou `VL53L4CD` atraves de expansores `PCF8574` que controlam os pinos `XSHUT`.
 
-A versao `1.2.0` inclui:
+O codigo atual inclui:
 
 - suporte a `VL53L0X` e `VL53L4CD`
 - preservacao do fluxo legado denso para `VL53L0X`
 - mapeamento fisico esparso com `LidarSensorSlot`
 - IDs logicos publicos e leituras por ID
 - enderecamento final automatico ou manual
+- leituras filtradas opcionais com mediana, EMA, hold-last-valid e rejeicao de salto
 - scan I2C nativo e debug passo a passo da inicializacao
 - selecao configuravel de `TwoWire`
 - documentacao de hover em ingles dentro de `LidarArray.h`
@@ -556,6 +628,55 @@ Sequencia esperada:
 
 O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen para os principais tipos, campos e metodos publicos. No Arduino IDE e no PlatformIO, esses comentarios devem aparecer como ajuda de hover para a API atual.
 
+### Filtros Internos Opcionais
+
+O caminho cru continua igual:
+
+- `readSensor()`
+- `readSensorNB()`
+- `readReading()`
+- `readReadingById()`
+
+As leituras filtradas sao opcionais e vivem em uma API separada:
+
+```cpp
+LidarFilterConfig filterConfig = LidarFilterConfig::recommended();
+filterConfig.maxJumpMm = 80;
+
+lidar.setFilterConfig(filterConfig);
+
+LidarFilteredReading filtered = lidar.readFilteredReading(0, true);
+Serial.print("raw=");
+Serial.print(filtered.raw.distanceMm);
+Serial.print(" filtered=");
+Serial.println(filtered.distanceMm);
+```
+
+Principais recursos do filtro:
+
+- janela de mediana `1`, `3` ou `5`
+- suavizacao EMA por `emaAlphaPercent`
+- hold-last-valid para leituras invalidas
+- rejeicao de salto com `maxJumpMm`
+- override por sensor com `setSensorFilterConfig(...)`
+
+Ponto de partida recomendado para um robo em movimento:
+
+- `LidarFilterConfig::recommended()`
+- `medianWindow = 3`
+- `emaAlphaPercent = 50`
+- `holdLastValid = true`
+- `maxHeldReads = 2`
+
+APIs filtradas:
+
+- `readFilteredSensor(index)`
+- `readFilteredSensorNB(index)`
+- `readFilteredSensorById(sensorId)`
+- `readFilteredSensorNBById(sensorId)`
+- `readFilteredReading(index, blocking)`
+- `readFilteredReadingById(sensorId, blocking)`
+
 ### Exemplos Publicos
 
 - `examples/basic`: uso basico do fluxo legado denso de `VL53L0X`
@@ -572,6 +693,7 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - Sensores acima de `numSensors` permanecem em shutdown.
 - `getSensor()` existe apenas para compatibilidade com `VL53L0X`.
 - `readSensor()` e `readSensorNB()` podem aplicar fallback e clamp quando o modo legado estiver ativo.
+- As leituras filtradas sao opcionais e nao alteram o comportamento cru de `readSensor()`, `readSensorNB()` ou `readReading()`.
 - `Vector.h` continua no repositorio, mas a biblioteca nao depende mais dele internamente.
 - Ver `0x29` antes da inicializacao e normal se um ToF ja estiver acordado.
 - `status = 254` indica um estado interno de nao pronto ou indisponivel.
@@ -585,6 +707,8 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - `LidarDebugLevel`: seleciona a verbosidade do debug
 - `LidarSensorSlot`: descricao de um slot fisico esparso
 - `LidarReading`: resultado estruturado de leitura
+- `LidarFilterConfig`: configuracao do pipeline de filtros
+- `LidarFilteredReading`: resultado filtrado com valores bruto e final
 - `LidarArrayConfig`: configuracao completa do array
 - `LidarArrayDebugConfig`: configuracao de debug da inicializacao e dos scans
 
@@ -598,6 +722,8 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - `LidarArrayConfig::forVL53L4CD(..., xshutPins, wire, sensorAddresses)`
 - `LidarArrayConfig::forVL53L4CD(..., sensorMap, wire)`
 - `LidarArrayDebugConfig::verbose(...)`
+- `LidarFilterConfig::disabled()`
+- `LidarFilterConfig::recommended()`
 
 #### Construtores
 
@@ -619,6 +745,8 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - `config() const`
 - `debug()`
 - `debug() const`
+- `filter()`
+- `filter() const`
 
 #### Setters de Configuracao
 
@@ -628,6 +756,14 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - `setWire(...)`
 - `setTimeout(...)`
 - `setVL53L4CDTiming(...)`
+- `setFilterConfig(...)`
+- `setSensorFilterConfig(...)`
+- `clearSensorFilterConfig(...)`
+- `clearSensorFilterConfigs()`
+- `hasSensorFilterConfig(index)`
+- `getEffectiveFilterConfig(index)`
+- `resetFilter(index)`
+- `resetFilters()`
 - `setMeasurementTimingBudget(...)`
 - `setVcselPulsePeriod(...)`
 
@@ -639,6 +775,12 @@ O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen p
 - `readSensorNBById(sensorId)`
 - `readReading(index, blocking)`
 - `readReadingById(sensorId, blocking)`
+- `readFilteredSensor(index)`
+- `readFilteredSensorNB(index)`
+- `readFilteredSensorById(sensorId)`
+- `readFilteredSensorNBById(sensorId)`
+- `readFilteredReading(index, blocking)`
+- `readFilteredReadingById(sensorId, blocking)`
 
 #### Acesso Direto aos Drivers
 

@@ -117,6 +117,23 @@ LidarArrayDebugConfig LidarArrayDebugConfig::verbose(
     return config;
 }
 
+LidarFilterConfig LidarFilterConfig::disabled()
+{
+    return LidarFilterConfig();
+}
+
+LidarFilterConfig LidarFilterConfig::recommended()
+{
+    LidarFilterConfig config;
+    config.enabled = true;
+    config.medianWindow = 3;
+    config.emaAlphaPercent = 50;
+    config.holdLastValid = true;
+    config.maxHeldReads = 2;
+    config.maxJumpMm = 0;
+    return config;
+}
+
 LidarArray::LidarArray(LidarSensorModel model)
 {
     resetMembers();
@@ -149,6 +166,7 @@ LidarArray::LidarArray(
 LidarArray::~LidarArray()
 {
     releaseStorage();
+    releaseFilterStorage();
 }
 
 void LidarArray::resetMembers()
@@ -160,6 +178,7 @@ void LidarArray::resetMembers()
     configCopied_ = false;
     configValid_ = false;
     explicitSensorMap_ = false;
+    filterStorageCount_ = 0;
 
     model_ = LidarSensorModel::VL53L0X;
     wire_ = &Wire;
@@ -185,9 +204,13 @@ void LidarArray::resetMembers()
     pcf8574States_ = nullptr;
     sensorSlots_ = nullptr;
     sensorReady_ = nullptr;
+    sensorFilterConfigs_ = nullptr;
+    sensorFilterOverrides_ = nullptr;
+    filterStates_ = nullptr;
     vl53l0xSensors_ = nullptr;
     vl53l4cdSensors_ = nullptr;
 
+    filterConfig_ = LidarFilterConfig::disabled();
     config_ = LidarArrayConfig::defaults();
 }
 
@@ -261,6 +284,58 @@ void LidarArray::releaseStorage()
     configCopied_ = false;
     configValid_ = false;
     explicitSensorMap_ = false;
+}
+
+bool LidarArray::ensureFilterStorage(uint8_t numSensors)
+{
+    if (numSensors == 0)
+    {
+        return false;
+    }
+
+    if (sensorFilterConfigs_ != nullptr &&
+        sensorFilterOverrides_ != nullptr &&
+        filterStates_ != nullptr &&
+        filterStorageCount_ == numSensors)
+    {
+        return true;
+    }
+
+    releaseFilterStorage();
+
+    sensorFilterConfigs_ = new (std::nothrow) LidarFilterConfig[numSensors];
+    sensorFilterOverrides_ = new (std::nothrow) bool[numSensors];
+    filterStates_ = new (std::nothrow) SensorFilterState[numSensors];
+
+    if (sensorFilterConfigs_ == nullptr ||
+        sensorFilterOverrides_ == nullptr ||
+        filterStates_ == nullptr)
+    {
+        releaseFilterStorage();
+        return false;
+    }
+
+    filterStorageCount_ = numSensors;
+    for (uint8_t sensorIndex = 0; sensorIndex < numSensors; ++sensorIndex)
+    {
+        sensorFilterConfigs_[sensorIndex] = LidarFilterConfig::disabled();
+        sensorFilterOverrides_[sensorIndex] = false;
+        filterStates_[sensorIndex] = SensorFilterState();
+    }
+
+    return true;
+}
+
+void LidarArray::releaseFilterStorage()
+{
+    delete[] sensorFilterConfigs_;
+    delete[] sensorFilterOverrides_;
+    delete[] filterStates_;
+
+    sensorFilterConfigs_ = nullptr;
+    sensorFilterOverrides_ = nullptr;
+    filterStates_ = nullptr;
+    filterStorageCount_ = 0;
 }
 
 bool LidarArray::copyLegacyLayout(const LidarArrayConfig &config)
@@ -371,6 +446,12 @@ void LidarArray::copyConfig(const LidarArrayConfig &config)
 
 bool LidarArray::syncConfiguration()
 {
+    if (!ensureFilterStorage(config_.numSensors))
+    {
+        configValid_ = false;
+        return false;
+    }
+
     const bool needsReallocation =
         pcf8574Addresses_ == nullptr ||
         pcf8574States_ == nullptr ||
@@ -496,6 +577,7 @@ bool LidarArray::begin()
         sensorReady_[i] = false;
     }
     initializedSensorCount_ = 0;
+    resetFilters();
 
     if (debugConfig_.scanBeforeInit)
     {
@@ -614,6 +696,16 @@ const LidarArrayDebugConfig &LidarArray::debug() const
     return debugConfig_;
 }
 
+LidarFilterConfig &LidarArray::filter()
+{
+    return filterConfig_;
+}
+
+const LidarFilterConfig &LidarArray::filter() const
+{
+    return filterConfig_;
+}
+
 void LidarArray::setLayout(uint8_t numPCF, uint8_t numSensors, const uint8_t *pcf8574Addresses, const uint8_t *xshutPins)
 {
     config_.numPCF = numPCF;
@@ -656,6 +748,125 @@ void LidarArray::setVL53L4CDTiming(uint8_t timingBudgetMs, uint32_t interMeasure
     config_.vl53l4cdInterMeasurementMs = interMeasurementMs;
     vl53l4cdTimingBudgetMs_ = timingBudgetMs;
     vl53l4cdInterMeasurementMs_ = interMeasurementMs;
+}
+
+void LidarArray::setFilterConfig(const LidarFilterConfig &config)
+{
+    filterConfig_ = sanitizeFilterConfig(config);
+    resetFilters();
+}
+
+void LidarArray::setSensorFilterConfig(uint8_t sensorIndex, const LidarFilterConfig &config)
+{
+    const uint8_t configuredSensorCount = sensorCount_ != 0 ? sensorCount_ : config_.numSensors;
+    if (configuredSensorCount == 0 || sensorIndex >= configuredSensorCount)
+    {
+        return;
+    }
+
+    if (!ensureFilterStorage(configuredSensorCount))
+    {
+        return;
+    }
+
+    sensorFilterConfigs_[sensorIndex] = sanitizeFilterConfig(config);
+    sensorFilterOverrides_[sensorIndex] = true;
+    resetFilter(sensorIndex);
+}
+
+void LidarArray::clearSensorFilterConfig(uint8_t sensorIndex)
+{
+    const uint8_t configuredSensorCount = sensorCount_ != 0 ? sensorCount_ : config_.numSensors;
+    if (configuredSensorCount == 0 ||
+        sensorIndex >= configuredSensorCount ||
+        sensorFilterConfigs_ == nullptr ||
+        sensorFilterOverrides_ == nullptr)
+    {
+        return;
+    }
+
+    sensorFilterConfigs_[sensorIndex] = LidarFilterConfig::disabled();
+    sensorFilterOverrides_[sensorIndex] = false;
+    resetFilter(sensorIndex);
+}
+
+void LidarArray::clearSensorFilterConfigs()
+{
+    if (sensorFilterConfigs_ == nullptr || sensorFilterOverrides_ == nullptr)
+    {
+        return;
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < filterStorageCount_; ++sensorIndex)
+    {
+        sensorFilterConfigs_[sensorIndex] = LidarFilterConfig::disabled();
+        sensorFilterOverrides_[sensorIndex] = false;
+    }
+
+    resetFilters();
+}
+
+bool LidarArray::hasSensorFilterConfig(uint8_t sensorIndex) const
+{
+    if (sensorFilterOverrides_ == nullptr || sensorIndex >= filterStorageCount_)
+    {
+        return false;
+    }
+
+    return sensorFilterOverrides_[sensorIndex];
+}
+
+LidarFilterConfig LidarArray::getEffectiveFilterConfig(uint8_t sensorIndex) const
+{
+    if (sensorIndex < filterStorageCount_ &&
+        sensorFilterOverrides_ != nullptr &&
+        sensorFilterConfigs_ != nullptr &&
+        sensorFilterOverrides_[sensorIndex])
+    {
+        return sanitizeFilterConfig(sensorFilterConfigs_[sensorIndex]);
+    }
+
+    if (sensorIndex < (sensorCount_ != 0 ? sensorCount_ : config_.numSensors))
+    {
+        return sanitizeFilterConfig(filterConfig_);
+    }
+
+    return LidarFilterConfig::disabled();
+}
+
+void LidarArray::resetFilter(uint8_t sensorIndex)
+{
+    const uint8_t configuredSensorCount = sensorCount_ != 0 ? sensorCount_ : config_.numSensors;
+    if (configuredSensorCount == 0 || sensorIndex >= configuredSensorCount)
+    {
+        return;
+    }
+
+    if (!ensureFilterStorage(configuredSensorCount))
+    {
+        return;
+    }
+
+    resetFilterState(sensorIndex);
+}
+
+void LidarArray::resetFilters()
+{
+    const uint8_t configuredSensorCount = sensorCount_ != 0 ? sensorCount_ : config_.numSensors;
+    if (configuredSensorCount == 0)
+    {
+        return;
+    }
+
+    if (!ensureFilterStorage(configuredSensorCount))
+    {
+        return;
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < configuredSensorCount; ++sensorIndex)
+    {
+        resetFilterState(sensorIndex);
+    }
 }
 
 uint16_t LidarArray::readSensor(uint8_t sensorIndex)
@@ -727,6 +938,48 @@ LidarReading LidarArray::readReadingById(int16_t sensorId, bool blocking)
     }
 
     return readReading(static_cast<uint8_t>(sensorIndex), blocking);
+}
+
+uint16_t LidarArray::readFilteredSensor(uint8_t sensorIndex)
+{
+    return readFilteredReading(sensorIndex, true).distanceMm;
+}
+
+uint16_t LidarArray::readFilteredSensorNB(uint8_t sensorIndex)
+{
+    return readFilteredReading(sensorIndex, false).distanceMm;
+}
+
+uint16_t LidarArray::readFilteredSensorById(int16_t sensorId)
+{
+    return readFilteredReadingById(sensorId, true).distanceMm;
+}
+
+uint16_t LidarArray::readFilteredSensorNBById(int16_t sensorId)
+{
+    return readFilteredReadingById(sensorId, false).distanceMm;
+}
+
+LidarFilteredReading LidarArray::readFilteredReading(uint8_t sensorIndex, bool blocking)
+{
+    if (sensorIndex >= sensorCount_)
+    {
+        return buildInvalidFilteredReading(sensorIndex, kLibraryStatusInvalidIndex);
+    }
+
+    const LidarReading raw = readReading(sensorIndex, blocking);
+    return applyFilterPipeline(sensorIndex, raw);
+}
+
+LidarFilteredReading LidarArray::readFilteredReadingById(int16_t sensorId, bool blocking)
+{
+    const int16_t sensorIndex = indexOfSensorId(sensorId);
+    if (sensorIndex < 0)
+    {
+        return buildInvalidFilteredReadingById(sensorId, kLibraryStatusInvalidIndex);
+    }
+
+    return readFilteredReading(static_cast<uint8_t>(sensorIndex), blocking);
 }
 
 VL53L0X &LidarArray::getSensor(uint8_t sensorIndex)
@@ -1132,6 +1385,235 @@ LidarReading LidarArray::buildInvalidReadingById(int16_t sensorId, uint8_t statu
     reading.status = status;
     reading.sensorId = sensorId;
     return reading;
+}
+
+LidarFilteredReading LidarArray::buildInvalidFilteredReading(uint8_t sensorIndex, uint8_t status) const
+{
+    LidarFilteredReading reading;
+    reading.raw = buildInvalidReading(sensorIndex, status);
+    return reading;
+}
+
+LidarFilteredReading LidarArray::buildInvalidFilteredReadingById(int16_t sensorId, uint8_t status) const
+{
+    LidarFilteredReading reading;
+    reading.raw = buildInvalidReadingById(sensorId, status);
+    return reading;
+}
+
+LidarFilterConfig LidarArray::sanitizeFilterConfig(const LidarFilterConfig &config)
+{
+    LidarFilterConfig sanitized = config;
+
+    if (sanitized.medianWindow <= 1)
+    {
+        sanitized.medianWindow = 1;
+    }
+    else if (sanitized.medianWindow <= 3)
+    {
+        sanitized.medianWindow = 3;
+    }
+    else
+    {
+        sanitized.medianWindow = 5;
+    }
+
+    if (sanitized.emaAlphaPercent > 100)
+    {
+        sanitized.emaAlphaPercent = 100;
+    }
+
+    if (!sanitized.holdLastValid || sanitized.maxHeldReads == 0)
+    {
+        sanitized.holdLastValid = false;
+        sanitized.maxHeldReads = 0;
+    }
+
+    return sanitized;
+}
+
+void LidarArray::resetFilterState(uint8_t sensorIndex)
+{
+    if (filterStates_ == nullptr || sensorIndex >= filterStorageCount_)
+    {
+        return;
+    }
+
+    filterStates_[sensorIndex] = SensorFilterState();
+}
+
+uint16_t LidarArray::medianFromSamples(const uint16_t *samples, uint8_t count) const
+{
+    if (count == 0)
+    {
+        return 0;
+    }
+
+    uint16_t sorted[kMaxFilterWindow] = {0, 0, 0, 0, 0};
+    for (uint8_t i = 0; i < count; ++i)
+    {
+        sorted[i] = samples[i];
+    }
+
+    for (uint8_t i = 1; i < count; ++i)
+    {
+        uint16_t value = sorted[i];
+        int8_t j = static_cast<int8_t>(i) - 1;
+        while (j >= 0 && sorted[j] > value)
+        {
+            sorted[j + 1] = sorted[j];
+            --j;
+        }
+        sorted[j + 1] = value;
+    }
+
+    return sorted[count / 2];
+}
+
+uint16_t LidarArray::computeMedianCandidate(uint8_t sensorIndex, uint16_t sample, uint8_t window) const
+{
+    if (filterStates_ == nullptr || sensorIndex >= filterStorageCount_ || window <= 1)
+    {
+        return sample;
+    }
+
+    const SensorFilterState &state = filterStates_[sensorIndex];
+    if (state.sampleCount + 1 < window)
+    {
+        return sample;
+    }
+
+    uint16_t candidateSamples[kMaxFilterWindow] = {0, 0, 0, 0, 0};
+    uint8_t candidateCount = 0;
+    const uint8_t historyCount = static_cast<uint8_t>(window - 1);
+
+    for (uint8_t offset = historyCount; offset > 0; --offset)
+    {
+        const uint8_t index = static_cast<uint8_t>((state.sampleHead + kMaxFilterWindow - offset) % kMaxFilterWindow);
+        candidateSamples[candidateCount++] = state.samples[index];
+    }
+
+    candidateSamples[candidateCount++] = sample;
+    return medianFromSamples(candidateSamples, candidateCount);
+}
+
+void LidarArray::appendValidFilterSample(uint8_t sensorIndex, uint16_t sample)
+{
+    if (filterStates_ == nullptr || sensorIndex >= filterStorageCount_)
+    {
+        return;
+    }
+
+    SensorFilterState &state = filterStates_[sensorIndex];
+    state.samples[state.sampleHead] = sample;
+    state.sampleHead = static_cast<uint8_t>((state.sampleHead + 1) % kMaxFilterWindow);
+    if (state.sampleCount < kMaxFilterWindow)
+    {
+        ++state.sampleCount;
+    }
+}
+
+uint16_t LidarArray::applyEma(uint16_t previousValue, uint16_t sample, uint8_t alphaPercent) const
+{
+    if (alphaPercent == 0 || alphaPercent >= 100)
+    {
+        return sample;
+    }
+
+    const uint32_t numerator =
+        (static_cast<uint32_t>(alphaPercent) * sample) +
+        (static_cast<uint32_t>(100 - alphaPercent) * previousValue);
+    return static_cast<uint16_t>((numerator + 50U) / 100U);
+}
+
+LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const LidarReading &raw)
+{
+    LidarFilteredReading filtered;
+    filtered.raw = raw;
+
+    const LidarFilterConfig config = getEffectiveFilterConfig(sensorIndex);
+    if (!config.enabled)
+    {
+        filtered.distanceMm = raw.distanceMm;
+        filtered.valid = raw.valid;
+        return filtered;
+    }
+
+    filtered.filterApplied = true;
+
+    if (filterStates_ == nullptr || sensorIndex >= filterStorageCount_)
+    {
+        filtered.distanceMm = raw.distanceMm;
+        filtered.valid = raw.valid;
+        return filtered;
+    }
+
+    SensorFilterState &state = filterStates_[sensorIndex];
+
+    if (!raw.valid || raw.timeout)
+    {
+        if (config.holdLastValid &&
+            state.hasLastFilteredValue &&
+            state.heldReads < config.maxHeldReads)
+        {
+            filtered.distanceMm = state.lastFilteredValue;
+            filtered.valid = true;
+            filtered.heldLastValid = true;
+            ++state.heldReads;
+            return filtered;
+        }
+
+        filtered.distanceMm = 0;
+        filtered.valid = false;
+        return filtered;
+    }
+
+    const uint16_t medianCandidate = computeMedianCandidate(sensorIndex, raw.distanceMm, config.medianWindow);
+
+    if (config.maxJumpMm > 0 && state.hasLastFilteredValue)
+    {
+        const uint16_t jumpMm = state.lastFilteredValue > medianCandidate
+            ? static_cast<uint16_t>(state.lastFilteredValue - medianCandidate)
+            : static_cast<uint16_t>(medianCandidate - state.lastFilteredValue);
+
+        if (jumpMm > config.maxJumpMm)
+        {
+            filtered.jumpRejected = true;
+
+            if (config.holdLastValid &&
+                state.heldReads < config.maxHeldReads)
+            {
+                filtered.distanceMm = state.lastFilteredValue;
+                filtered.valid = true;
+                filtered.heldLastValid = true;
+                ++state.heldReads;
+                return filtered;
+            }
+
+            filtered.distanceMm = 0;
+            filtered.valid = false;
+            return filtered;
+        }
+    }
+
+    appendValidFilterSample(sensorIndex, raw.distanceMm);
+
+    uint16_t finalValue = medianCandidate;
+    if (config.emaAlphaPercent != 0)
+    {
+        if (state.hasLastFilteredValue)
+        {
+            finalValue = applyEma(state.lastFilteredValue, medianCandidate, config.emaAlphaPercent);
+        }
+    }
+
+    state.lastFilteredValue = finalValue;
+    state.hasLastFilteredValue = true;
+    state.heldReads = 0;
+
+    filtered.distanceMm = finalValue;
+    filtered.valid = true;
+    return filtered;
 }
 
 LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)

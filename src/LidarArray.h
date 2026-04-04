@@ -77,6 +77,55 @@ struct LidarReading
 };
 
 /**
+ * @brief Configures the optional per-sensor filtering pipeline.
+ */
+struct LidarFilterConfig
+{
+    /// Enable the internal filter pipeline for filtered reads.
+    bool enabled = false;
+    /// Median window size. Supported values are 1, 3, or 5. A value of 1 disables median filtering.
+    uint8_t medianWindow = 3;
+    /// EMA alpha in percent. Use 0 to disable EMA and 100 to strongly favor the newest sample.
+    uint8_t emaAlphaPercent = 50;
+    /// Keep the last valid filtered value when the next raw read is invalid.
+    bool holdLastValid = true;
+    /// Maximum number of consecutive held reads. Use 0 to disable hold behavior.
+    uint8_t maxHeldReads = 2;
+    /// Reject changes larger than this threshold in millimeters. Use 0 to disable jump rejection.
+    uint16_t maxJumpMm = 0;
+
+    /**
+     * @brief Build a disabled filter configuration.
+     * @return A configuration that bypasses the filter pipeline.
+     */
+    static LidarFilterConfig disabled();
+    /**
+     * @brief Build the recommended starting filter configuration.
+     * @return Enabled median(3) + EMA(50%) + hold-last-valid defaults.
+     */
+    static LidarFilterConfig recommended();
+};
+
+/**
+ * @brief Result returned by the filtered reading API.
+ */
+struct LidarFilteredReading
+{
+    /// Raw reading produced by the sensor before filtering.
+    LidarReading raw;
+    /// Final filtered or held output distance in millimeters.
+    uint16_t distanceMm = 0;
+    /// True when the final filtered output is valid for control use.
+    bool valid = false;
+    /// True when the filter pipeline was enabled for this read.
+    bool filterApplied = false;
+    /// True when the library returned the previous valid filtered value.
+    bool heldLastValid = false;
+    /// True when the current sample was rejected by the max-jump rule.
+    bool jumpRejected = false;
+};
+
+/**
  * @brief User-facing configuration for a LidarArray instance.
  */
 struct LidarArrayConfig
@@ -360,6 +409,17 @@ public:
      * @return Read-only reference to the live debug configuration object.
      */
     const LidarArrayDebugConfig &debug() const;
+    /**
+     * @brief Access the mutable global filter configuration used by filtered reads.
+     * @return Reference to the global filter configuration.
+     * @note If you change this after the array is already running, call resetFilters() to clear old filter state.
+     */
+    LidarFilterConfig &filter();
+    /**
+     * @brief Access the current global filter configuration used by filtered reads.
+     * @return Read-only reference to the global filter configuration.
+     */
+    const LidarFilterConfig &filter() const;
 
     /**
      * @brief Define a legacy dense sensor layout using the XSHUT order array.
@@ -401,6 +461,51 @@ public:
      * @param interMeasurementMs Delay between measurements in milliseconds.
      */
     void setVL53L4CDTiming(uint8_t timingBudgetMs, uint32_t interMeasurementMs = 0);
+    /**
+     * @brief Replace the global filter configuration used by filtered reads.
+     * @param config New global filter configuration.
+     * @note This resets all filter state.
+     */
+    void setFilterConfig(const LidarFilterConfig &config);
+    /**
+     * @brief Set a per-sensor filter override.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @param config Filter configuration to use for that sensor.
+     * @note This resets only the selected sensor filter state.
+     */
+    void setSensorFilterConfig(uint8_t sensorIndex, const LidarFilterConfig &config);
+    /**
+     * @brief Remove the filter override from one sensor.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @note This resets only the selected sensor filter state.
+     */
+    void clearSensorFilterConfig(uint8_t sensorIndex);
+    /**
+     * @brief Remove all per-sensor filter overrides.
+     * @note This resets all filter state.
+     */
+    void clearSensorFilterConfigs();
+    /**
+     * @brief Check whether one sensor has a filter override.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @return True when a per-sensor filter override is present.
+     */
+    bool hasSensorFilterConfig(uint8_t sensorIndex) const;
+    /**
+     * @brief Return the effective filter configuration for one sensor.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @return Sanitized per-sensor config when present, otherwise the sanitized global config.
+     */
+    LidarFilterConfig getEffectiveFilterConfig(uint8_t sensorIndex) const;
+    /**
+     * @brief Reset the filter state of one sensor.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     */
+    void resetFilter(uint8_t sensorIndex);
+    /**
+     * @brief Reset the filter state of all sensors.
+     */
+    void resetFilters();
 
     /**
      * @brief Read one sensor by internal index and return only the distance.
@@ -442,6 +547,44 @@ public:
      * @return Detailed measurement and availability information.
      */
     LidarReading readReadingById(int16_t sensorId, bool blocking = true);
+    /**
+     * @brief Read one sensor by internal index using the filter pipeline.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @return Final filtered or held distance in millimeters.
+     */
+    uint16_t readFilteredSensor(uint8_t sensorIndex);
+    /**
+     * @brief Perform a non-blocking filtered distance read by internal index.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @return Final filtered or held distance in millimeters.
+     */
+    uint16_t readFilteredSensorNB(uint8_t sensorIndex);
+    /**
+     * @brief Read one sensor by public sensor ID using the filter pipeline.
+     * @param sensorId Public logical sensor ID.
+     * @return Final filtered or held distance in millimeters.
+     */
+    uint16_t readFilteredSensorById(int16_t sensorId);
+    /**
+     * @brief Perform a non-blocking filtered distance read by public sensor ID.
+     * @param sensorId Public logical sensor ID.
+     * @return Final filtered or held distance in millimeters.
+     */
+    uint16_t readFilteredSensorNBById(int16_t sensorId);
+    /**
+     * @brief Read one sensor by internal index and return the filtered result.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @param blocking True for blocking behavior, false for a non-blocking attempt.
+     * @return Filtered result containing the raw and final output values.
+     */
+    LidarFilteredReading readFilteredReading(uint8_t sensorIndex, bool blocking = true);
+    /**
+     * @brief Read one sensor by public sensor ID and return the filtered result.
+     * @param sensorId Public logical sensor ID.
+     * @param blocking True for blocking behavior, false for a non-blocking attempt.
+     * @return Filtered result containing the raw and final output values.
+     */
+    LidarFilteredReading readFilteredReadingById(int16_t sensorId, bool blocking = true);
 
     /**
      * @brief Access a VL53L0X driver instance by internal index.
@@ -552,12 +695,23 @@ public:
 
 private:
     static constexpr uint8_t kSlotsPerPcf = 8;
+    static constexpr uint8_t kMaxFilterWindow = 5;
     static constexpr uint8_t kTofDefaultAddress = 0x29;
     static constexpr uint8_t kDefaultAddressBase = 0x30;
     static constexpr uint8_t kMinimumManualAddress = 0x08;
     static constexpr uint8_t kLibraryStatusInvalidIndex = 0xFD;
     static constexpr uint8_t kLibraryStatusNotReady = 0xFE;
     static constexpr uint8_t kLibraryStatusTimeout = 0xFF;
+
+    struct SensorFilterState
+    {
+        uint16_t samples[kMaxFilterWindow] = {0, 0, 0, 0, 0};
+        uint8_t sampleCount = 0;
+        uint8_t sampleHead = 0;
+        uint16_t lastFilteredValue = 0;
+        bool hasLastFilteredValue = false;
+        uint8_t heldReads = 0;
+    };
 
     uint8_t numPCF_;
     uint8_t sensorCount_;
@@ -566,6 +720,7 @@ private:
     bool configCopied_;
     bool configValid_;
     bool explicitSensorMap_;
+    uint8_t filterStorageCount_;
 
     LidarSensorModel model_;
     TwoWire *wire_;
@@ -588,11 +743,15 @@ private:
     uint32_t vl53l4cdInterMeasurementMs_;
 
     LidarArrayDebugConfig debugConfig_;
+    LidarFilterConfig filterConfig_;
 
     uint8_t *pcf8574Addresses_;
     uint8_t *pcf8574States_;
     LidarSensorSlot *sensorSlots_;
     bool *sensorReady_;
+    LidarFilterConfig *sensorFilterConfigs_;
+    bool *sensorFilterOverrides_;
+    SensorFilterState *filterStates_;
 
     VL53L0X *vl53l0xSensors_;
     VL53L4CD *vl53l4cdSensors_;
@@ -602,6 +761,8 @@ private:
     void resetMembers();
     bool allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensorModel model);
     void releaseStorage();
+    bool ensureFilterStorage(uint8_t numSensors);
+    void releaseFilterStorage();
     void copyConfig(const LidarArrayConfig &config);
     bool copyLegacyLayout(const LidarArrayConfig &config);
     bool copySparseLayout(const LidarArrayConfig &config);
@@ -620,9 +781,18 @@ private:
 
     LidarReading buildInvalidReading(uint8_t sensorIndex, uint8_t status) const;
     LidarReading buildInvalidReadingById(int16_t sensorId, uint8_t status) const;
+    LidarFilteredReading buildInvalidFilteredReading(uint8_t sensorIndex, uint8_t status) const;
+    LidarFilteredReading buildInvalidFilteredReadingById(int16_t sensorId, uint8_t status) const;
     LidarReading readVL53L0X(uint8_t sensorIndex, bool blocking);
     LidarReading readVL53L4CD(uint8_t sensorIndex, bool blocking);
     uint16_t applyLegacyReadBehavior(const LidarReading &reading) const;
+    static LidarFilterConfig sanitizeFilterConfig(const LidarFilterConfig &config);
+    void resetFilterState(uint8_t sensorIndex);
+    uint16_t medianFromSamples(const uint16_t *samples, uint8_t count) const;
+    uint16_t computeMedianCandidate(uint8_t sensorIndex, uint16_t sample, uint8_t window) const;
+    void appendValidFilterSample(uint8_t sensorIndex, uint16_t sample);
+    uint16_t applyEma(uint16_t previousValue, uint16_t sample, uint8_t alphaPercent) const;
+    LidarFilteredReading applyFilterPipeline(uint8_t sensorIndex, const LidarReading &raw);
 
     void logMessage(LidarDebugLevel level, const __FlashStringHelper *message) const;
     void logScanResult(uint8_t address, uint8_t errorCode) const;
