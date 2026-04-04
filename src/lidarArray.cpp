@@ -32,6 +32,26 @@ LidarArrayConfig LidarArrayConfig::forModel(
     config.pcf8574Addresses = pcf8574Addresses;
     config.xshutPins = xshutPins;
     config.sensorAddresses = sensorAddresses;
+    config.sensorMap = nullptr;
+    config.wire = wire != nullptr ? wire : &Wire;
+    return config;
+}
+
+LidarArrayConfig LidarArrayConfig::forModel(
+    LidarSensorModel model,
+    uint8_t numPCF,
+    uint8_t numSensors,
+    const uint8_t *pcf8574Addresses,
+    const LidarSensorSlot *sensorMap,
+    TwoWire *wire)
+{
+    LidarArrayConfig config = defaults(model);
+    config.numPCF = numPCF;
+    config.numSensors = numSensors;
+    config.pcf8574Addresses = pcf8574Addresses;
+    config.xshutPins = nullptr;
+    config.sensorAddresses = nullptr;
+    config.sensorMap = sensorMap;
     config.wire = wire != nullptr ? wire : &Wire;
     return config;
 }
@@ -47,6 +67,16 @@ LidarArrayConfig LidarArrayConfig::forVL53L0X(
     return forModel(LidarSensorModel::VL53L0X, numPCF, numSensors, pcf8574Addresses, xshutPins, wire, sensorAddresses);
 }
 
+LidarArrayConfig LidarArrayConfig::forVL53L0X(
+    uint8_t numPCF,
+    uint8_t numSensors,
+    const uint8_t *pcf8574Addresses,
+    const LidarSensorSlot *sensorMap,
+    TwoWire *wire)
+{
+    return forModel(LidarSensorModel::VL53L0X, numPCF, numSensors, pcf8574Addresses, sensorMap, wire);
+}
+
 LidarArrayConfig LidarArrayConfig::forVL53L4CD(
     uint8_t numPCF,
     uint8_t numSensors,
@@ -56,6 +86,16 @@ LidarArrayConfig LidarArrayConfig::forVL53L4CD(
     const uint8_t *sensorAddresses)
 {
     return forModel(LidarSensorModel::VL53L4CD, numPCF, numSensors, pcf8574Addresses, xshutPins, wire, sensorAddresses);
+}
+
+LidarArrayConfig LidarArrayConfig::forVL53L4CD(
+    uint8_t numPCF,
+    uint8_t numSensors,
+    const uint8_t *pcf8574Addresses,
+    const LidarSensorSlot *sensorMap,
+    TwoWire *wire)
+{
+    return forModel(LidarSensorModel::VL53L4CD, numPCF, numSensors, pcf8574Addresses, sensorMap, wire);
 }
 
 LidarArrayDebugConfig LidarArrayDebugConfig::verbose(
@@ -119,6 +159,7 @@ void LidarArray::resetMembers()
     initializedSensorCount_ = 0;
     configCopied_ = false;
     configValid_ = false;
+    explicitSensorMap_ = false;
 
     model_ = LidarSensorModel::VL53L0X;
     wire_ = &Wire;
@@ -141,9 +182,8 @@ void LidarArray::resetMembers()
     vl53l4cdInterMeasurementMs_ = 0;
 
     pcf8574Addresses_ = nullptr;
-    xshutPins_ = nullptr;
     pcf8574States_ = nullptr;
-    sensorAddresses_ = nullptr;
+    sensorSlots_ = nullptr;
     sensorReady_ = nullptr;
     vl53l0xSensors_ = nullptr;
     vl53l4cdSensors_ = nullptr;
@@ -164,15 +204,13 @@ bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensor
     model_ = model;
 
     pcf8574Addresses_ = new (std::nothrow) uint8_t[numPCF_];
-    xshutPins_ = new (std::nothrow) uint8_t[totalSlots_];
     pcf8574States_ = new (std::nothrow) uint8_t[numPCF_];
-    sensorAddresses_ = new (std::nothrow) uint8_t[sensorCount_];
+    sensorSlots_ = new (std::nothrow) LidarSensorSlot[sensorCount_];
     sensorReady_ = new (std::nothrow) bool[sensorCount_];
 
     if (pcf8574Addresses_ == nullptr ||
-        xshutPins_ == nullptr ||
         pcf8574States_ == nullptr ||
-        sensorAddresses_ == nullptr ||
+        sensorSlots_ == nullptr ||
         sensorReady_ == nullptr)
     {
         releaseStorage();
@@ -204,25 +242,98 @@ bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensor
 void LidarArray::releaseStorage()
 {
     delete[] pcf8574Addresses_;
-    delete[] xshutPins_;
     delete[] pcf8574States_;
-    delete[] sensorAddresses_;
+    delete[] sensorSlots_;
     delete[] sensorReady_;
     delete[] vl53l0xSensors_;
     delete[] vl53l4cdSensors_;
 
     pcf8574Addresses_ = nullptr;
-    xshutPins_ = nullptr;
     pcf8574States_ = nullptr;
-    sensorAddresses_ = nullptr;
+    sensorSlots_ = nullptr;
     sensorReady_ = nullptr;
     vl53l0xSensors_ = nullptr;
     vl53l4cdSensors_ = nullptr;
+    numPCF_ = 0;
+    sensorCount_ = 0;
+    totalSlots_ = 0;
+    initializedSensorCount_ = 0;
+    configCopied_ = false;
+    configValid_ = false;
+    explicitSensorMap_ = false;
+}
+
+bool LidarArray::copyLegacyLayout(const LidarArrayConfig &config)
+{
+    if (config.xshutPins == nullptr)
+    {
+        return false;
+    }
+
+    for (uint8_t pcfIndex = 0; pcfIndex < numPCF_; ++pcfIndex)
+    {
+        uint8_t pinMask = 0;
+        for (uint8_t slot = 0; slot < kSlotsPerPcf; ++slot)
+        {
+            const uint8_t index = static_cast<uint8_t>((pcfIndex * kSlotsPerPcf) + slot);
+            const uint8_t pin = config.xshutPins[index];
+            if (pin >= kSlotsPerPcf)
+            {
+                return false;
+            }
+            if ((pinMask & (1 << pin)) != 0)
+            {
+                return false;
+            }
+            pinMask |= (1 << pin);
+        }
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
+    {
+        sensorSlots_[sensorIndex].pcfIndex = sensorIndex / kSlotsPerPcf;
+        sensorSlots_[sensorIndex].pin = config.xshutPins[sensorIndex];
+        sensorSlots_[sensorIndex].address = config.sensorAddresses != nullptr
+            ? config.sensorAddresses[sensorIndex]
+            : static_cast<uint8_t>(kDefaultAddressBase + sensorIndex);
+        sensorSlots_[sensorIndex].sensorId = sensorIndex;
+        sensorReady_[sensorIndex] = false;
+    }
+
+    return true;
+}
+
+bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
+{
+    if (config.sensorMap == nullptr || config.sensorAddresses != nullptr)
+    {
+        return false;
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
+    {
+        sensorSlots_[sensorIndex] = config.sensorMap[sensorIndex];
+
+        if (sensorSlots_[sensorIndex].address == 0)
+        {
+            sensorSlots_[sensorIndex].address = static_cast<uint8_t>(kDefaultAddressBase + sensorIndex);
+        }
+
+        if (sensorSlots_[sensorIndex].sensorId < 0)
+        {
+            sensorSlots_[sensorIndex].sensorId = sensorIndex;
+        }
+
+        sensorReady_[sensorIndex] = false;
+    }
+
+    return true;
 }
 
 void LidarArray::copyConfig(const LidarArrayConfig &config)
 {
-    if (config.pcf8574Addresses == nullptr || config.xshutPins == nullptr)
+    if (config.pcf8574Addresses == nullptr ||
+        (config.xshutPins == nullptr && config.sensorMap == nullptr))
     {
         configCopied_ = false;
         return;
@@ -243,6 +354,7 @@ void LidarArray::copyConfig(const LidarArrayConfig &config)
     vl53l0xFinalRangeVcselPeriod_ = config.vl53l0xFinalRangeVcselPeriod;
     vl53l4cdTimingBudgetMs_ = config.vl53l4cdTimingBudgetMs;
     vl53l4cdInterMeasurementMs_ = config.vl53l4cdInterMeasurementMs;
+    explicitSensorMap_ = config.sensorMap != nullptr;
 
     for (uint8_t i = 0; i < numPCF_; ++i)
     {
@@ -250,34 +362,19 @@ void LidarArray::copyConfig(const LidarArrayConfig &config)
         pcf8574States_[i] = 0xFF;
     }
 
-    for (uint8_t i = 0; i < totalSlots_; ++i)
-    {
-        xshutPins_[i] = config.xshutPins[i];
-    }
+    const bool copied = explicitSensorMap_
+        ? copySparseLayout(config)
+        : copyLegacyLayout(config);
 
-    for (uint8_t i = 0; i < sensorCount_; ++i)
-    {
-        if (config.sensorAddresses != nullptr)
-        {
-            sensorAddresses_[i] = config.sensorAddresses[i];
-        }
-        else
-        {
-            sensorAddresses_[i] = kDefaultAddressBase + i;
-        }
-        sensorReady_[i] = false;
-    }
-
-    configCopied_ = true;
+    configCopied_ = copied;
 }
 
 bool LidarArray::syncConfiguration()
 {
     const bool needsReallocation =
         pcf8574Addresses_ == nullptr ||
-        xshutPins_ == nullptr ||
         pcf8574States_ == nullptr ||
-        sensorAddresses_ == nullptr ||
+        sensorSlots_ == nullptr ||
         sensorReady_ == nullptr ||
         numPCF_ != config_.numPCF ||
         sensorCount_ != config_.numSensors ||
@@ -305,9 +402,8 @@ bool LidarArray::validateConfiguration() const
         sensorCount_ == 0 ||
         wire_ == nullptr ||
         pcf8574Addresses_ == nullptr ||
-        xshutPins_ == nullptr ||
         pcf8574States_ == nullptr ||
-        sensorAddresses_ == nullptr ||
+        sensorSlots_ == nullptr ||
         sensorReady_ == nullptr)
     {
         return false;
@@ -316,15 +412,6 @@ bool LidarArray::validateConfiguration() const
     if (sensorCount_ > totalSlots_)
     {
         return false;
-    }
-
-    if (config_.sensorAddresses == nullptr)
-    {
-        const uint8_t maxSensorAddresses = (0x77 - kDefaultAddressBase) + 1;
-        if (sensorCount_ > maxSensorAddresses)
-        {
-            return false;
-        }
     }
 
     for (uint8_t i = 0; i < numPCF_; ++i)
@@ -341,37 +428,32 @@ bool LidarArray::validateConfiguration() const
                 return false;
             }
         }
-
-        uint8_t pinMask = 0;
-        for (uint8_t slot = 0; slot < kSlotsPerPcf; ++slot)
-        {
-            const uint8_t index = (i * kSlotsPerPcf) + slot;
-            const uint8_t pin = xshutPins_[index];
-            if (pin >= kSlotsPerPcf)
-            {
-                return false;
-            }
-            if ((pinMask & (1 << pin)) != 0)
-            {
-                return false;
-            }
-            pinMask |= (1 << pin);
-        }
     }
 
     for (uint8_t i = 0; i < sensorCount_; ++i)
     {
-        const uint8_t targetAddress = sensorAddresses_[i];
-        if (targetAddress < kMinimumManualAddress ||
-            targetAddress > 0x77 ||
-            targetAddress == kTofDefaultAddress)
+        const LidarSensorSlot &slot = sensorSlots_[i];
+
+        if (slot.pcfIndex >= numPCF_ || slot.pin >= kSlotsPerPcf)
+        {
+            return false;
+        }
+
+        if (slot.sensorId < 0)
+        {
+            return false;
+        }
+
+        if (slot.address < kMinimumManualAddress ||
+            slot.address > 0x77 ||
+            slot.address == kTofDefaultAddress)
         {
             return false;
         }
 
         for (uint8_t pcfIndex = 0; pcfIndex < numPCF_; ++pcfIndex)
         {
-            if (targetAddress == pcf8574Addresses_[pcfIndex])
+            if (slot.address == pcf8574Addresses_[pcfIndex])
             {
                 return false;
             }
@@ -379,7 +461,19 @@ bool LidarArray::validateConfiguration() const
 
         for (uint8_t otherIndex = i + 1; otherIndex < sensorCount_; ++otherIndex)
         {
-            if (targetAddress == sensorAddresses_[otherIndex])
+            const LidarSensorSlot &otherSlot = sensorSlots_[otherIndex];
+
+            if (slot.pcfIndex == otherSlot.pcfIndex && slot.pin == otherSlot.pin)
+            {
+                return false;
+            }
+
+            if (slot.sensorId == otherSlot.sensorId)
+            {
+                return false;
+            }
+
+            if (slot.address == otherSlot.address)
             {
                 return false;
             }
@@ -526,6 +620,17 @@ void LidarArray::setLayout(uint8_t numPCF, uint8_t numSensors, const uint8_t *pc
     config_.numSensors = numSensors;
     config_.pcf8574Addresses = pcf8574Addresses;
     config_.xshutPins = xshutPins;
+    config_.sensorMap = nullptr;
+}
+
+void LidarArray::setLayout(uint8_t numPCF, uint8_t numSensors, const uint8_t *pcf8574Addresses, const LidarSensorSlot *sensorMap)
+{
+    config_.numPCF = numPCF;
+    config_.numSensors = numSensors;
+    config_.pcf8574Addresses = pcf8574Addresses;
+    config_.xshutPins = nullptr;
+    config_.sensorAddresses = nullptr;
+    config_.sensorMap = sensorMap;
 }
 
 void LidarArray::setSensorAddresses(const uint8_t *sensorAddresses)
@@ -573,6 +678,26 @@ uint16_t LidarArray::readSensorNB(uint8_t sensorIndex)
     return reading.distanceMm;
 }
 
+uint16_t LidarArray::readSensorById(int16_t sensorId)
+{
+    const LidarReading reading = readReadingById(sensorId, true);
+    if (legacyReadBehavior_)
+    {
+        return applyLegacyReadBehavior(reading);
+    }
+    return reading.distanceMm;
+}
+
+uint16_t LidarArray::readSensorNBById(int16_t sensorId)
+{
+    const LidarReading reading = readReadingById(sensorId, false);
+    if (legacyReadBehavior_)
+    {
+        return applyLegacyReadBehavior(reading);
+    }
+    return reading.distanceMm;
+}
+
 LidarReading LidarArray::readReading(uint8_t sensorIndex, bool blocking)
 {
     if (sensorIndex >= sensorCount_)
@@ -591,6 +716,17 @@ LidarReading LidarArray::readReading(uint8_t sensorIndex, bool blocking)
     }
 
     return readVL53L4CD(sensorIndex, blocking);
+}
+
+LidarReading LidarArray::readReadingById(int16_t sensorId, bool blocking)
+{
+    const int16_t sensorIndex = indexOfSensorId(sensorId);
+    if (sensorIndex < 0)
+    {
+        return buildInvalidReadingById(sensorId, kLibraryStatusInvalidIndex);
+    }
+
+    return readReading(static_cast<uint8_t>(sensorIndex), blocking);
 }
 
 VL53L0X &LidarArray::getSensor(uint8_t sensorIndex)
@@ -638,7 +774,7 @@ void LidarArray::setMeasurementTimingBudget(uint32_t timingBudget)
     {
         if (sensorReady_[i] && !vl53l0xSensors_[i].setMeasurementTimingBudget(vl53l0xMeasurementTimingBudgetUs_))
         {
-            logSensorStep(i, sensorAddresses_[i], F("failed to update timing budget"), LidarDebugLevel::Errors);
+            logSensorStep(i, F("failed to update timing budget"), LidarDebugLevel::Errors);
         }
     }
 }
@@ -683,7 +819,7 @@ void LidarArray::setVcselPulsePeriod(uint8_t type, uint8_t period)
 
         if (!applied)
         {
-            logSensorStep(i, sensorAddresses_[i], F("failed to update VCSEL period"), LidarDebugLevel::Errors);
+            logSensorStep(i, F("failed to update VCSEL period"), LidarDebugLevel::Errors);
         }
     }
 }
@@ -739,6 +875,44 @@ bool LidarArray::isSensorReady(uint8_t sensorIndex) const
     return sensorIndex < sensorCount_ && sensorReady_[sensorIndex];
 }
 
+int16_t LidarArray::getSensorId(uint8_t sensorIndex) const
+{
+    if (sensorIndex >= sensorCount_ || sensorSlots_ == nullptr)
+    {
+        return -1;
+    }
+
+    return sensorSlots_[sensorIndex].sensorId;
+}
+
+int16_t LidarArray::indexOfSensorId(int16_t sensorId) const
+{
+    if (sensorSlots_ == nullptr)
+    {
+        return -1;
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
+    {
+        if (sensorSlots_[sensorIndex].sensorId == sensorId)
+        {
+            return sensorIndex;
+        }
+    }
+
+    return -1;
+}
+
+const LidarSensorSlot *LidarArray::getSensorSlot(uint8_t sensorIndex) const
+{
+    if (sensorIndex >= sensorCount_ || sensorSlots_ == nullptr)
+    {
+        return nullptr;
+    }
+
+    return &sensorSlots_[sensorIndex];
+}
+
 uint8_t LidarArray::scanI2C()
 {
     uint8_t foundCount = 0;
@@ -774,21 +948,11 @@ uint8_t LidarArray::scanI2C()
 
 bool LidarArray::shutdownAllSensors()
 {
-    for (uint8_t pcfIndex = 0; pcfIndex < numPCF_; ++pcfIndex)
-    {
-        pcf8574States_[pcfIndex] = 0xFF;
-    }
-
-    for (uint8_t slotIndex = 0; slotIndex < totalSlots_; ++slotIndex)
-    {
-        const uint8_t pcfIndex = slotIndex / kSlotsPerPcf;
-        const uint8_t pin = xshutPins_[slotIndex];
-        pcf8574States_[pcfIndex] &= static_cast<uint8_t>(~(1 << pin));
-    }
-
     bool success = true;
+
     for (uint8_t pcfIndex = 0; pcfIndex < numPCF_; ++pcfIndex)
     {
+        pcf8574States_[pcfIndex] = 0x00;
         if (!writePcf8574State(pcfIndex))
         {
             success = false;
@@ -805,9 +969,8 @@ bool LidarArray::shutdownAllSensors()
 
 bool LidarArray::bringSensorOutOfShutdown(uint8_t sensorIndex)
 {
-    const uint8_t pcfIndex = sensorIndex / kSlotsPerPcf;
-    const uint8_t pin = xshutPins_[sensorIndex];
-    const bool success = pcf8574Write(pcfIndex, pin, true);
+    const LidarSensorSlot &slot = sensorSlots_[sensorIndex];
+    const bool success = pcf8574Write(slot.pcfIndex, slot.pin, true);
 
     if (wakeDelayMs_ > 0)
     {
@@ -819,13 +982,13 @@ bool LidarArray::bringSensorOutOfShutdown(uint8_t sensorIndex)
 
 bool LidarArray::initializeSensor(uint8_t sensorIndex)
 {
-    const uint8_t address = sensorAddresses_[sensorIndex];
+    const uint8_t address = sensorSlots_[sensorIndex].address;
 
-    logSensorStep(sensorIndex, address, F("starting initialization"), LidarDebugLevel::Info);
+    logSensorStep(sensorIndex, F("starting initialization"), LidarDebugLevel::Info);
 
     if (!bringSensorOutOfShutdown(sensorIndex))
     {
-        logSensorStep(sensorIndex, address, F("failed to enable XSHUT"), LidarDebugLevel::Errors);
+        logSensorStep(sensorIndex, F("failed to enable XSHUT"), LidarDebugLevel::Errors);
         return false;
     }
 
@@ -841,18 +1004,17 @@ bool LidarArray::initializeSensor(uint8_t sensorIndex)
 
     if (!ready)
     {
-        const uint8_t pcfIndex = sensorIndex / kSlotsPerPcf;
-        const uint8_t pin = xshutPins_[sensorIndex];
-        pcf8574Write(pcfIndex, pin, false);
+        const LidarSensorSlot &slot = sensorSlots_[sensorIndex];
+        pcf8574Write(slot.pcfIndex, slot.pin, false);
         if (shutdownDelayMs_ > 0)
         {
             delay(shutdownDelayMs_);
         }
-        logSensorStep(sensorIndex, address, F("sensor unavailable"), LidarDebugLevel::Errors);
+        logSensorStep(sensorIndex, F("sensor unavailable"), LidarDebugLevel::Errors);
     }
     else
     {
-        logSensorStep(sensorIndex, address, F("sensor ready"), LidarDebugLevel::Info);
+        logSensorStep(sensorIndex, F("sensor ready"), LidarDebugLevel::Info);
     }
 
     if (debugConfig_.scanEachStep)
@@ -956,10 +1118,19 @@ LidarReading LidarArray::buildInvalidReading(uint8_t sensorIndex, uint8_t status
 {
     LidarReading reading;
     reading.status = status;
-    if (sensorIndex < sensorCount_)
+    if (sensorIndex < sensorCount_ && sensorSlots_ != nullptr)
     {
-        reading.address = sensorAddresses_[sensorIndex];
+        reading.address = sensorSlots_[sensorIndex].address;
+        reading.sensorId = sensorSlots_[sensorIndex].sensorId;
     }
+    return reading;
+}
+
+LidarReading LidarArray::buildInvalidReadingById(int16_t sensorId, uint8_t status) const
+{
+    LidarReading reading;
+    reading.status = status;
+    reading.sensorId = sensorId;
     return reading;
 }
 
@@ -967,7 +1138,8 @@ LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)
 {
     VL53L0X &sensor = vl53l0xSensors_[sensorIndex];
     LidarReading reading;
-    reading.address = sensorAddresses_[sensorIndex];
+    reading.address = sensorSlots_[sensorIndex].address;
+    reading.sensorId = sensorSlots_[sensorIndex].sensorId;
 
     if (!blocking)
     {
@@ -1006,7 +1178,8 @@ LidarReading LidarArray::readVL53L4CD(uint8_t sensorIndex, bool blocking)
 {
     VL53L4CD &sensor = vl53l4cdSensors_[sensorIndex];
     LidarReading reading;
-    reading.address = sensorAddresses_[sensorIndex];
+    reading.address = sensorSlots_[sensorIndex].address;
+    reading.sensorId = sensorSlots_[sensorIndex].sensorId;
 
     if (!blocking && !sensor.dataReady())
     {
@@ -1086,23 +1259,30 @@ void LidarArray::logScanResult(uint8_t address, uint8_t errorCode) const
 
 void LidarArray::logSensorStep(
     uint8_t sensorIndex,
-    uint8_t address,
     const __FlashStringHelper *message,
     LidarDebugLevel level) const
 {
-    if (!shouldLog(level))
+    if (!shouldLog(level) || sensorSlots_ == nullptr || sensorIndex >= sensorCount_)
     {
         return;
     }
 
+    const LidarSensorSlot &slot = sensorSlots_[sensorIndex];
+
     debugConfig_.out->print(F("[LidarArray] Sensor "));
     debugConfig_.out->print(sensorIndex);
-    debugConfig_.out->print(F(" @ 0x"));
-    if (address < 0x10)
+    debugConfig_.out->print(F(" (ID "));
+    debugConfig_.out->print(slot.sensorId);
+    debugConfig_.out->print(F(", PCF "));
+    debugConfig_.out->print(slot.pcfIndex);
+    debugConfig_.out->print(F(" pin "));
+    debugConfig_.out->print(slot.pin);
+    debugConfig_.out->print(F(") @ 0x"));
+    if (slot.address < 0x10)
     {
         debugConfig_.out->print('0');
     }
-    debugConfig_.out->print(address, HEX);
+    debugConfig_.out->print(slot.address, HEX);
     debugConfig_.out->print(F(": "));
     debugConfig_.out->println(message);
     animatePause();

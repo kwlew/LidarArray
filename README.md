@@ -1,35 +1,103 @@
-# LidarArray 1.1.0
+# LidarArray 1.2.0
 
 ## English
 
-Library for managing `VL53L0X` or `VL53L4CD` ToF sensor arrays using `PCF8574` expanders to drive the `XSHUT` lines.
+`LidarArray` is an Arduino library for managing `VL53L0X` or `VL53L4CD` ToF sensor arrays through `PCF8574` expanders that control the `XSHUT` lines.
 
-Version `1.1.0` focuses on:
+Version `1.2.0` includes:
 
-- a shorter configuration flow
-- native debug output through `Print`
-- predictable sequential sensor initialization
-- logical sensor remapping in software
-- optional manual I2C addresses per sensor
+- support for `VL53L0X` and `VL53L4CD`
+- preserved legacy dense `VL53L0X` flow
+- sparse physical mapping through `LidarSensorSlot`
+- public logical sensor IDs and ID-based reads
+- automatic or manual final I2C addressing
+- native I2C scan and step-by-step initialization debug
+- configurable `TwoWire` bus selection
+- English hover documentation in `LidarArray.h`
 
 ### Dependencies
 
 - Pololu `VL53L0X`
 - Pololu `VL53L4CD`
 
-Your sketch must still call `Wire.begin()` or `Wire.begin(SDA, SCL)` before initializing the library.
+Your sketch must still call `Wire.begin()` or `Wire.begin(SDA, SCL)` before using the library.
 
-### Recommended Header
+### Recommended Include
 
 ```cpp
 #include <LidarArray.h>
 ```
 
-The root wrapper `lidarArray.h` is still available only for backward compatibility.
+The root wrapper `lidarArray.h` is still available for backward compatibility.
 
-### Minimal Setup
+### Layout Modes
 
-#### Legacy VL53L0X flow
+`LidarArray` supports two public layout styles:
+
+- legacy dense layout with `xshutPins`
+- sparse layout with `LidarSensorSlot`
+
+Use the dense layout when sensors follow the classic sequential mapping by PCF block. Use the sparse layout when sensors are spread across arbitrary `PCF8574` pins and you want explicit physical mapping.
+
+### LidarSensorSlot Cheat Sheet
+
+The sparse mapping API uses the following slot order:
+
+```cpp
+{pcfIndex, pin, address, sensorId}
+```
+
+Example:
+
+```cpp
+const LidarSensorSlot sensorMap[] = {
+    {0, 3, 0, 0},
+    {0, 4, 0, 1},
+    {0, 7, 0, 2},
+    {1, 4, 0x36, 10},
+    {1, 6, 0, 11}
+};
+```
+
+Field meaning:
+
+- `pcfIndex`: which `PCF8574` controls the sensor `XSHUT`
+- `pin`: physical `PCF8574` pin, always `0..7`
+- `address`: final sensor address, `0` for automatic assignment
+- `sensorId`: public logical ID, `-1` to reuse the internal index
+
+### Internal Index vs Public ID vs Physical Position
+
+The library separates three concepts:
+
+- internal index: always `0..N-1`
+- public `sensorId`: optional user-facing label such as `10`, `11`, `12`
+- physical position: the pair `pcfIndex + pin`
+
+This means you can keep a compact internal array while exposing sensor names that match your robot geometry or application naming.
+
+### Addressing Rules
+
+Default behavior:
+
+- sensor boot address: `0x29`
+- final address: `0x30 + internal index`
+
+Manual addressing is also supported:
+
+- with dense legacy layout, use `setSensorAddresses(...)` or `config.sensorAddresses`
+- with sparse layout, define the final address in each `LidarSensorSlot`
+
+Rules:
+
+- every final address must be unique
+- final addresses must not collide with any `PCF8574`
+- `0x29` must not be used as a final address
+- do not combine `sensorMap` with `setSensorAddresses()`
+
+### Quick Start
+
+#### Legacy VL53L0X
 
 ```cpp
 #include <LidarArray.h>
@@ -46,11 +114,17 @@ void setup() {
     Wire.begin();
     lidar.initSensors(20000, 14, 10, 100);
 }
+
+void loop() {
+    for (uint8_t i = 0; i < lidar.getSensorCount(); ++i) {
+        Serial.println(lidar.readSensor(i));
+    }
+}
 ```
 
-Use this path if you want to keep the legacy `readSensor()` / `readSensorNB()` behavior.
+Use this path when you want the original dense `VL53L0X` flow and legacy `readSensor()` behavior.
 
-#### Short VL53L4CD setup
+#### Current VL53L4CD Setup
 
 ```cpp
 #include <LidarArray.h>
@@ -58,60 +132,73 @@ Use this path if you want to keep the legacy `readSensor()` / `readSensorNB()` b
 const uint8_t pcf8574Addresses[] = {0x20};
 const uint8_t xshutPins[] = {0, 1, 2, 3, 4, 5, 6, 7};
 
-LidarArray tofarr(LidarSensorModel::VL53L4CD);
+LidarArray lidar(LidarSensorModel::VL53L4CD);
 
 void setup() {
     Serial.begin(115200);
     Wire.begin();
 
-    tofarr.setLayout(1, 4, pcf8574Addresses, xshutPins);
-    tofarr.setTimeout(100);
-    tofarr.setVL53L4CDTiming(50, 0);
-
-    tofarr.begin();
+    lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    lidar.setTimeout(100);
+    lidar.setVL53L4CDTiming(50, 0);
+    lidar.begin();
 }
 ```
 
-The only required pieces to get started are:
+Minimum required information:
 
 - sensor model
 - number of `PCF8574` expanders
 - number of active sensors
-- `PCF8574` I2C addresses
-- `xshutPins` mapping
+- `PCF8574` addresses
+- `xshutPins` or `sensorMap`
 
 Everything else can stay at the defaults.
 
-### Logical Order and I2C Addresses
-
-Logical sensor order follows the order of the `xshutPins` map.
-
-By default, final sensor addresses are assigned as:
-
-- sensor boot address: `0x29`
-- final address: `0x30 + logical index`
-
-You can also provide a manual address array before `begin()`:
+#### Sparse Layout with Public IDs
 
 ```cpp
-const uint8_t sensorAddresses[] = {0x30, 0x32, 0x34, 0x36};
-tofarr.setSensorAddresses(sensorAddresses);
+#include <LidarArray.h>
+
+const uint8_t pcf8574Addresses[] = {0x20, 0x21};
+const LidarSensorSlot sensorMap[] = {
+    {0, 3, 0, 0},
+    {0, 4, 0, 1},
+    {0, 7, 0, 2},
+    {1, 0, 0, 10},
+    {1, 2, 0, 11},
+    {1, 4, 0, 12},
+    {1, 5, 0, 13},
+    {1, 7, 0, 14}
+};
+
+LidarArray lidar(LidarSensorModel::VL53L4CD);
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin();
+
+    lidar.setLayout(2, 8, pcf8574Addresses, sensorMap);
+    lidar.setTimeout(100);
+    lidar.setVL53L4CDTiming(50, 0);
+    lidar.begin();
+}
+
+void loop() {
+    LidarReading reading = lidar.readReadingById(10, true);
+    Serial.println(reading.distanceMm);
+}
 ```
 
-Rules for manual addresses:
-
-- each address must be unique
-- addresses must not collide with any `PCF8574`
-- `0x29` must not be used as a final address
-- `setSensorAddresses(nullptr)` restores automatic addressing
+This is the recommended API for non-dense layouts and applications that need public sensor IDs.
 
 ### Initialization Debug
 
-The library can show the full initialization sequence through `Serial` or any other `Print`.
+The library can trace the full initialization sequence through any `Print`, including `Serial`.
 
 ```cpp
 LidarArrayDebugConfig debugConfig =
-    LidarArrayDebugConfig::verbose(&Serial, true, true, true, 700, 2500);
+    LidarArrayDebugConfig::verbose(&Serial, true, true, true, 500, 1500);
 
 lidar.setDebugConfig(debugConfig);
 lidar.begin();
@@ -124,62 +211,227 @@ Main debug options:
 - `bootDelayMs`
 - `animationDelayMs`
 
-Expected behavior:
+Expected sequence:
 
-1. `scanBeforeInit` shows the bus before the library changes anything.
-2. After shutdown, `0x29` should disappear if all ToF sensors are really off.
-3. As sensors are added back one by one, new final addresses should appear on the bus.
+1. scan the bus before the library changes sensor state
+2. shut down all ToF devices
+3. bring sensors back one by one
+4. assign final addresses and keep scanning if enabled
 
-### Examples
+### Header Hover Docs
 
-- `examples/basic`: simple legacy flow
-- `examples/usingTwoPCF`: two expanders with continuous sensor numbering
-- `examples/vl53l4cdConfig`: minimal current API setup
-- `examples/logicalRemap`: change logical order without moving hardware
-- `examples/guidedDebug`: guided boot debug and per-step I2C scan
-- `examples/addressOverview`: inspect automatic or manual final addresses
+The public header `LidarArray.h` includes English Doxygen-style comments for the main public types, fields, and methods. In Arduino IDE and PlatformIO, these comments should appear as hover help for the current API.
 
-### Notes
+### Shipped Examples
+
+- `examples/basic`: basic legacy dense `VL53L0X` usage
+- `examples/usingTwoPCF`: dense layout across two `PCF8574` expanders
+- `examples/vl53l4cdConfig`: minimal current `VL53L4CD` setup
+- `examples/logicalRemap`: reorder logical indices without rewiring hardware
+- `examples/guidedDebug`: walk through boot, scans, and debug timing
+- `examples/addressOverview`: inspect automatic and manual final addresses
+- `examples/sparseSensorMap`: sparse mapping with `LidarSensorSlot` and public IDs
+
+### Notes and Common Pitfalls
 
 - One `LidarArray` instance supports only one sensor model at a time.
 - Sensors above `numSensors` remain in shutdown.
-- `Vector.h` is still in the repository, but it is no longer used internally.
-- A full public API reference is available at the end of this README.
+- `getSensor()` is only for `VL53L0X` compatibility.
+- `readSensor()` and `readSensorNB()` may apply legacy fallback and clamp behavior when legacy mode is active.
+- `Vector.h` remains in the repository, but the library no longer depends on it internally.
+- Seeing `0x29` before initialization is normal if a ToF sensor is already awake.
+- `status = 254` indicates a library-side not-ready or unavailable condition.
+- Partial initialization does not prevent ready sensors from being used.
+
+### Public API Reference
+
+#### Public Types
+
+- `LidarSensorModel`: selects `VL53L0X` or `VL53L4CD`
+- `LidarDebugLevel`: selects the debug verbosity
+- `LidarSensorSlot`: sparse physical slot description
+- `LidarReading`: structured measurement result
+- `LidarArrayConfig`: full array configuration
+- `LidarArrayDebugConfig`: initialization and scan debug configuration
+
+#### Config Builders
+
+- `LidarArrayConfig::defaults(model)`
+- `LidarArrayConfig::forModel(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forModel(..., sensorMap, wire)`
+- `LidarArrayConfig::forVL53L0X(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forVL53L0X(..., sensorMap, wire)`
+- `LidarArrayConfig::forVL53L4CD(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forVL53L4CD(..., sensorMap, wire)`
+- `LidarArrayDebugConfig::verbose(...)`
+
+#### Constructors
+
+- `LidarArray(LidarSensorModel model = LidarSensorModel::VL53L0X)`
+- `LidarArray(const LidarArrayConfig &config)`
+- `LidarArray(uint8_t numPCF, uint8_t numSensors, const uint8_t pcf8574Addresses[], const uint8_t xshutPins[][8])`
+
+#### Initialization
+
+- `begin()`
+- `initSensors()`
+- `initSensors(int measurementT)`
+- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange)`
+- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange, int timeout)`
+
+#### Configuration Access
+
+- `config()`
+- `config() const`
+- `debug()`
+- `debug() const`
+
+#### Configuration Setters
+
+- `setLayout(..., xshutPins)`
+- `setLayout(..., sensorMap)`
+- `setSensorAddresses(...)`
+- `setWire(...)`
+- `setTimeout(...)`
+- `setVL53L4CDTiming(...)`
+- `setMeasurementTimingBudget(...)`
+- `setVcselPulsePeriod(...)`
+
+#### Reading API
+
+- `readSensor(index)`
+- `readSensorNB(index)`
+- `readSensorById(sensorId)`
+- `readSensorNBById(sensorId)`
+- `readReading(index, blocking)`
+- `readReadingById(sensorId, blocking)`
+
+#### Direct Driver Access
+
+- `getSensor(index)`
+- `getVL53L0XSensor(index)`
+- `getVL53L4CDSensor(index)`
+
+#### Debug API
+
+- `setDebugConfig(...)`
+- `setDebugOutput(...)`
+- `setDebugLevel(...)`
+- `setDebugScanBeforeInit(...)`
+- `setDebugScanEachStep(...)`
+- `setDebugBootDelay(...)`
+- `setDebugStepDelay(...)`
+- `scanI2C()`
+
+#### Diagnostics
+
+- `getSensorCount()`
+- `getInitializedSensorCount()`
+- `isSensorReady(index)`
+- `getSensorId(index)`
+- `indexOfSensorId(sensorId)`
+- `getSensorSlot(index)`
 
 ---
 
 ## PT-BR
 
-Biblioteca para gerenciar arrays de sensores ToF `VL53L0X` ou `VL53L4CD` usando `PCF8574` para controlar os pinos `XSHUT`.
+`LidarArray` e uma biblioteca Arduino para gerenciar arrays de sensores ToF `VL53L0X` ou `VL53L4CD` atraves de expansores `PCF8574` que controlam os pinos `XSHUT`.
 
-Esta versao 1.1.0 foca em:
+A versao `1.2.0` inclui:
 
-- configuracao minima mais pratica
-- debug nativo em `Print`
-- inicializacao sequencial previsivel
-- organizacao logica dos sensores por software
-- enderecamento manual opcional por sensor
+- suporte a `VL53L0X` e `VL53L4CD`
+- preservacao do fluxo legado denso para `VL53L0X`
+- mapeamento fisico esparso com `LidarSensorSlot`
+- IDs logicos publicos e leituras por ID
+- enderecamento final automatico ou manual
+- scan I2C nativo e debug passo a passo da inicializacao
+- selecao configuravel de `TwoWire`
+- documentacao de hover em ingles dentro de `LidarArray.h`
 
-## Dependencias
+### Dependencias
 
-- `VL53L0X` da Pololu
-- `VL53L4CD` da Pololu
+- Pololu `VL53L0X`
+- Pololu `VL53L4CD`
 
-O sketch continua responsavel por chamar `Wire.begin()` ou `Wire.begin(SDA, SCL)` antes da inicializacao da biblioteca.
+O sketch continua responsavel por chamar `Wire.begin()` ou `Wire.begin(SDA, SCL)` antes de usar a biblioteca.
 
-## Header recomendado
-
-Use preferencialmente:
+### Include Recomendado
 
 ```cpp
 #include <LidarArray.h>
 ```
 
-O wrapper raiz `lidarArray.h` foi mantido apenas por compatibilidade.
+O wrapper raiz `lidarArray.h` continua disponivel por compatibilidade.
 
-## Configuracao minima
+### Modos de Layout
 
-### VL53L0X com API legada
+`LidarArray` suporta dois estilos publicos de layout:
+
+- layout denso legado com `xshutPins`
+- layout esparso com `LidarSensorSlot`
+
+Use o layout denso quando os sensores seguem o mapeamento sequencial classico por bloco de PCF. Use o layout esparso quando os sensores estiverem distribuidos em pinos arbitrarios de um ou mais `PCF8574` e voce quiser declarar o mapeamento fisico explicitamente.
+
+### Cola do LidarSensorSlot
+
+A API de mapeamento esparso usa a seguinte ordem de campos:
+
+```cpp
+{pcfIndex, pin, address, sensorId}
+```
+
+Exemplo:
+
+```cpp
+const LidarSensorSlot sensorMap[] = {
+    {0, 3, 0, 0},
+    {0, 4, 0, 1},
+    {0, 7, 0, 2},
+    {1, 4, 0x36, 10},
+    {1, 6, 0, 11}
+};
+```
+
+Significado dos campos:
+
+- `pcfIndex`: qual `PCF8574` controla o `XSHUT`
+- `pin`: pino fisico do `PCF8574`, sempre `0..7`
+- `address`: endereco final do sensor, `0` para modo automatico
+- `sensorId`: ID logico publico, `-1` para reaproveitar o indice interno
+
+### Indice Interno vs sensorId vs Posicao Fisica
+
+A biblioteca separa tres conceitos:
+
+- indice interno: sempre `0..N-1`
+- `sensorId` publico: rotulo opcional como `10`, `11`, `12`
+- posicao fisica: o par `pcfIndex + pin`
+
+Assim, a biblioteca pode manter arrays internos compactos enquanto voce expoe nomes de sensores que fazem sentido para o robo ou para a aplicacao.
+
+### Regras de Enderecamento
+
+Comportamento padrao:
+
+- endereco de boot do sensor: `0x29`
+- endereco final: `0x30 + indice interno`
+
+Tambem existe enderecamento manual:
+
+- no layout denso legado, use `setSensorAddresses(...)` ou `config.sensorAddresses`
+- no layout esparso, defina o endereco final dentro de cada `LidarSensorSlot`
+
+Regras:
+
+- todo endereco final precisa ser unico
+- enderecos finais nao podem colidir com nenhum `PCF8574`
+- `0x29` nao pode ser usado como endereco final
+- nao combine `sensorMap` com `setSensorAddresses()`
+
+### Inicio Rapido
+
+#### VL53L0X Legado
 
 ```cpp
 #include <LidarArray.h>
@@ -196,11 +448,17 @@ void setup() {
     Wire.begin();
     lidar.initSensors(20000, 14, 10, 100);
 }
+
+void loop() {
+    for (uint8_t i = 0; i < lidar.getSensorCount(); ++i) {
+        Serial.println(lidar.readSensor(i));
+    }
+}
 ```
 
-Use esse caminho quando quiser manter o fluxo legado de `readSensor()` e `readSensorNB()`.
+Use esse caminho quando quiser o fluxo denso original de `VL53L0X` e o comportamento legado de `readSensor()`.
 
-### VL53L4CD com configuracao curta
+#### Configuracao Atual com VL53L4CD
 
 ```cpp
 #include <LidarArray.h>
@@ -208,352 +466,206 @@ Use esse caminho quando quiser manter o fluxo legado de `readSensor()` e `readSe
 const uint8_t pcf8574Addresses[] = {0x20};
 const uint8_t xshutPins[] = {0, 1, 2, 3, 4, 5, 6, 7};
 
-LidarArray tofarr(LidarSensorModel::VL53L4CD);
+LidarArray lidar(LidarSensorModel::VL53L4CD);
 
 void setup() {
     Serial.begin(115200);
     Wire.begin();
 
-    tofarr.setLayout(1, 4, pcf8574Addresses, xshutPins);
-    tofarr.setTimeout(100);
-    tofarr.setVL53L4CDTiming(50, 0);
-
-    tofarr.begin();
+    lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    lidar.setTimeout(100);
+    lidar.setVL53L4CDTiming(50, 0);
+    lidar.begin();
 }
 ```
 
-Os campos realmente obrigatorios para comecar sao:
+Informacoes minimas necessarias:
 
 - modelo do sensor
-- quantidade de PCF8574
+- quantidade de `PCF8574`
 - quantidade de sensores ativos
-- enderecos dos PCF8574
-- mapa `xshutPins`
+- enderecos dos `PCF8574`
+- `xshutPins` ou `sensorMap`
 
-O restante pode ficar nos defaults e ser ajustado depois.
+Todo o resto pode ficar nos defaults.
 
-### Configurando pela struct
-
-Se preferir guardar a configuracao em uma struct curta:
+#### Layout Esparso com IDs Publicos
 
 ```cpp
-auto config = LidarArrayConfig::forVL53L4CD(1, 4, pcf8574Addresses, xshutPins);
-config.timeoutMs = 100;
+#include <LidarArray.h>
 
-LidarArray tofarr(config);
-```
-
-Tambem e possivel editar a configuracao acumulada antes do `begin()`:
-
-```cpp
-LidarArray tofarr(LidarSensorModel::VL53L4CD);
-
-tofarr.config().numPCF = 1;
-tofarr.config().numSensors = 4;
-tofarr.config().pcf8574Addresses = pcf8574Addresses;
-tofarr.config().xshutPins = xshutPins;
-tofarr.config().timeoutMs = 100;
-tofarr.config().vl53l4cdTimingBudgetMs = 50;
-```
-
-### Enderecos manuais opcionais
-
-Por padrao, a biblioteca usa `0x30 + indice logico`.
-
-Se quiser definir manualmente o endereco final de cada sensor, passe um array com `numSensors` posicoes:
-
-```cpp
-const uint8_t sensorAddresses[] = {0x30, 0x32, 0x34, 0x36};
-
-tofarr.setSensorAddresses(sensorAddresses);
-```
-
-Faca isso antes de chamar `begin()`.
-
-Tambem funciona pela struct:
-
-```cpp
-auto config = LidarArrayConfig::forVL53L4CD(1, 4, pcf8574Addresses, xshutPins);
-config.sensorAddresses = sensorAddresses;
-```
-
-Regras para esse array:
-
-- cada endereco precisa ser unico
-- nao pode colidir com o endereco de nenhum `PCF8574`
-- nao use `0x29`, porque esse e o endereco padrao usado durante a inicializacao sequencial
-- se quiser voltar ao modo automatico, passe `nullptr` em `setSensorAddresses()`
-
-## Como a biblioteca organiza os sensores
-
-### Ordem logica
-
-A ordem logica dos sensores segue a ordem do mapa `xshutPins`.
-
-Exemplo:
-
-```cpp
-const uint8_t xshutPins[] = {
-    0, 1, 2, 3, 4, 5, 6, 7
+const uint8_t pcf8574Addresses[] = {0x20, 0x21};
+const LidarSensorSlot sensorMap[] = {
+    {0, 3, 0, 0},
+    {0, 4, 0, 1},
+    {0, 7, 0, 2},
+    {1, 0, 0, 10},
+    {1, 2, 0, 11},
+    {1, 4, 0, 12},
+    {1, 5, 0, 13},
+    {1, 7, 0, 14}
 };
+
+LidarArray lidar(LidarSensorModel::VL53L4CD);
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin();
+
+    lidar.setLayout(2, 8, pcf8574Addresses, sensorMap);
+    lidar.setTimeout(100);
+    lidar.setVL53L4CDTiming(50, 0);
+    lidar.begin();
+}
+
+void loop() {
+    LidarReading reading = lidar.readReadingById(10, true);
+    Serial.println(reading.distanceMm);
+}
 ```
 
-Nesse caso:
+Essa e a API recomendada para layouts nao densos e para aplicacoes que precisam de IDs publicos.
 
-- `readReading(0)` corresponde ao canal `0`
-- `readReading(1)` corresponde ao canal `1`
-- `readReading(2)` corresponde ao canal `2`
+### Debug da Inicializacao
 
-Se voce trocar a ordem do mapa, troca tambem a ordem logica dos indices.
-
-### Enderecos I2C finais
-
-Durante a inicializacao, cada sensor e ligado sozinho, inicializado no endereco padrao e depois reenderecado.
-
-Hoje o contrato da biblioteca e:
-
-- sensor ToF padrao antes do reenderecamento: `0x29`
-- modo automatico: enderecos finais `0x30 + indice logico`
-- modo manual: enderecos finais vindos do array configurado em `setSensorAddresses()` ou `config.sensorAddresses`
-
-Exemplo para 4 sensores:
-
-- indice `0` -> `0x30`
-- indice `1` -> `0x31`
-- indice `2` -> `0x32`
-- indice `3` -> `0x33`
-
-Exemplo manual para 4 sensores:
-
-- indice `0` -> `0x30`
-- indice `1` -> `0x32`
-- indice `2` -> `0x34`
-- indice `3` -> `0x36`
-
-Os indices logicos continuam vindo do `xshutPins`. O que muda e apenas o endereco final que cada sensor recebe no barramento.
-
-## Trocar sensores de lugar via software
-
-Nesta versao, "trocar sensor de lugar via software" significa trocar a ordem logica do mapa `xshutPins`, nao mover o hardware.
-
-Exemplo de ordem original:
-
-```cpp
-const uint8_t xshutPins[] = {
-    0, 1, 2, 3, 4, 5, 6, 7
-};
-```
-
-Exemplo de ordem remapeada:
-
-```cpp
-const uint8_t xshutPins[] = {
-    3, 1, 2, 0, 4, 5, 6, 7
-};
-```
-
-Com isso:
-
-- o sensor ligado no canal fisico `3` passa a ser o indice logico `0`
-- o sensor ligado no canal fisico `0` passa a ser o indice logico `3`
-
-Esse remapeio e util quando:
-
-- a instalacao fisica ja esta pronta
-- os sensores foram montados em ordem diferente da desejada
-- voce quer alinhar o indice logico com a geometria do robo sem refazer cabos
-
-## Debug de inicializacao
-
-O debug foi pensado para mostrar o passo a passo do barramento durante o boot.
-
-Exemplo:
+A biblioteca consegue mostrar a sequencia completa de inicializacao em qualquer `Print`, incluindo `Serial`.
 
 ```cpp
 LidarArrayDebugConfig debugConfig =
-    LidarArrayDebugConfig::verbose(&Serial, true, true, true, 700, 2500);
+    LidarArrayDebugConfig::verbose(&Serial, true, true, true, 500, 1500);
 
 lidar.setDebugConfig(debugConfig);
 lidar.begin();
 ```
 
-Campos principais:
+Principais opcoes de debug:
 
-- `scanBeforeInit`: faz um scan antes de derrubar os ToF
-- `scanEachStep`: faz scan apos cada sensor ser adicionado
-- `bootDelayMs`: pausa antes de comecar a sequencia, util para abrir o monitor serial
-- `animationDelayMs`: pausa entre as etapas de configuracao dos sensores
-
-Comportamento esperado:
-
-1. `scanBeforeInit` mostra o barramento como ele estava antes da biblioteca agir.
-2. Depois do shutdown, o endereco `0x29` deve desaparecer se todos os ToF foram realmente desligados.
-3. A cada sensor inicializado, deve aparecer `0x30`, depois `0x31`, depois `0x32` e assim por diante.
-
-Observacao:
-
-- o delay animado vale para as etapas de configuracao dos sensores
-- o scan I2C em si nao pausa por endereco
-
-## Leitura detalhada
-
-```cpp
-LidarReading reading = lidar.readReading(0, true);
-
-Serial.print(reading.distanceMm);
-Serial.print(" mm, status=");
-Serial.println(reading.status);
-```
-
-Campos de `LidarReading`:
-
-- `distanceMm`: ultima distancia lida
-- `status`: status bruto do sensor ou status interno de indisponibilidade
-- `valid`: leitura valida para uso
-- `timeout`: timeout detectado pelo driver
-- `dataReady`: indica se havia dado pronto na leitura
-- `address`: endereco I2C atribuido ao sensor
-
-## Troubleshooting rapido
-
-### Vejo `0x29` no scan antes da inicializacao
-
-Isso e normal quando algum ToF ainda esta acordado antes da biblioteca assumir o controle.
-
-Esse endereco nao deve ser usado como endereco final manual em `setSensorAddresses()`.
-
-### `0x29` nao some depois do shutdown
-
-Revise:
-
-- mapa `xshutPins`
-- ligacao do `PCF8574`
-- alimentacao dos sensores
-
-### Alguns sensores ficam como `sensor unavailable`
-
-Isso indica falha de inicializacao naquele indice especifico. O restante do array pode continuar funcionando.
-
-Use:
-
-- `getInitializedSensorCount()`
-- `isSensorReady(i)`
+- `scanBeforeInit`
 - `scanEachStep`
+- `bootDelayMs`
+- `animationDelayMs`
 
-para descobrir em que ponto a sequencia falhou.
+Sequencia esperada:
 
-### `status=254`
+1. scan do barramento antes da biblioteca mudar o estado dos sensores
+2. shutdown de todos os ToF
+3. retorno dos sensores um por vez
+4. atribuicao dos enderecos finais e novos scans, se habilitados
 
-Esse status e interno da biblioteca e indica sensor nao pronto ou indisponivel para leitura naquele indice.
+### Documentacao de Hover no Header
 
-### PlatformIO continua mostrando codigo antigo
+O header publico `LidarArray.h` inclui comentarios em ingles no estilo Doxygen para os principais tipos, campos e metodos publicos. No Arduino IDE e no PlatformIO, esses comentarios devem aparecer como ajuda de hover para a API atual.
 
-Se o projeto de testes continuar preso em cache:
+### Exemplos Publicos
 
-- apague a pasta `.pio/` do projeto `testes`
-- rode o build novamente
+- `examples/basic`: uso basico do fluxo legado denso de `VL53L0X`
+- `examples/usingTwoPCF`: layout denso em dois expansores `PCF8574`
+- `examples/vl53l4cdConfig`: configuracao minima atual para `VL53L4CD`
+- `examples/logicalRemap`: remapeio da ordem logica sem refazer os cabos
+- `examples/guidedDebug`: boot guiado com scans e tempos de debug
+- `examples/addressOverview`: inspecao de enderecos finais automaticos e manuais
+- `examples/sparseSensorMap`: mapeamento esparso com `LidarSensorSlot` e IDs publicos
 
-## Exemplos publicos
+### Observacoes e Armadilhas Comuns
 
-- `examples/basic`
-  - fluxo legado simples
-- `examples/usingTwoPCF`
-  - dois expansores e numeracao continua
-- `examples/vl53l4cdConfig`
-  - configuracao minima usando a API atual
-- `examples/logicalRemap`
-  - mostra como trocar a ordem logica dos sensores
-- `examples/guidedDebug`
-  - mostra o debug de boot e o scan passo a passo
-- `examples/addressOverview`
-  - mostra como inspecionar os enderecos finais automaticos ou manuais
+- Uma instancia de `LidarArray` suporta apenas um modelo de sensor por vez.
+- Sensores acima de `numSensors` permanecem em shutdown.
+- `getSensor()` existe apenas para compatibilidade com `VL53L0X`.
+- `readSensor()` e `readSensorNB()` podem aplicar fallback e clamp quando o modo legado estiver ativo.
+- `Vector.h` continua no repositorio, mas a biblioteca nao depende mais dele internamente.
+- Ver `0x29` antes da inicializacao e normal se um ToF ja estiver acordado.
+- `status = 254` indica um estado interno de nao pronto ou indisponivel.
+- Inicializacao parcial nao impede o uso dos sensores que ficaram prontos.
 
-## Projeto de testes
+### Referencia da API Publica
 
-A validacao manual fica no projeto PlatformIO:
+#### Tipos Publicos
 
-`C:\Users\czjoa\OneDrive\Documentos\Projetos\Bibliotecas\testes`
+- `LidarSensorModel`: seleciona `VL53L0X` ou `VL53L4CD`
+- `LidarDebugLevel`: seleciona a verbosidade do debug
+- `LidarSensorSlot`: descricao de um slot fisico esparso
+- `LidarReading`: resultado estruturado de leitura
+- `LidarArrayConfig`: configuracao completa do array
+- `LidarArrayDebugConfig`: configuracao de debug da inicializacao e dos scans
 
-O foco desta rodada continua sendo o `ESP32-P4` da Waveshare.
+#### Builders de Configuracao
 
-## Observacoes finais
+- `LidarArrayConfig::defaults(model)`
+- `LidarArrayConfig::forModel(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forModel(..., sensorMap, wire)`
+- `LidarArrayConfig::forVL53L0X(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forVL53L0X(..., sensorMap, wire)`
+- `LidarArrayConfig::forVL53L4CD(..., xshutPins, wire, sensorAddresses)`
+- `LidarArrayConfig::forVL53L4CD(..., sensorMap, wire)`
+- `LidarArrayDebugConfig::verbose(...)`
 
-- Um `LidarArray` suporta apenas um modelo de sensor por instancia.
-- Sensores alem de `numSensors` permanecem em shutdown.
-- `Vector.h` continua no repositorio, mas nao faz mais parte do fluxo interno.
-- Falhas de inicializacao nao travam o restante do array.
+#### Construtores
 
-## Licenca
+- `LidarArray(LidarSensorModel model = LidarSensorModel::VL53L0X)`
+- `LidarArray(const LidarArrayConfig &config)`
+- `LidarArray(uint8_t numPCF, uint8_t numSensors, const uint8_t pcf8574Addresses[], const uint8_t xshutPins[][8])`
+
+#### Inicializacao
+
+- `begin()`
+- `initSensors()`
+- `initSensors(int measurementT)`
+- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange)`
+- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange, int timeout)`
+
+#### Acesso a Configuracao
+
+- `config()`
+- `config() const`
+- `debug()`
+- `debug() const`
+
+#### Setters de Configuracao
+
+- `setLayout(..., xshutPins)`
+- `setLayout(..., sensorMap)`
+- `setSensorAddresses(...)`
+- `setWire(...)`
+- `setTimeout(...)`
+- `setVL53L4CDTiming(...)`
+- `setMeasurementTimingBudget(...)`
+- `setVcselPulsePeriod(...)`
+
+#### API de Leitura
+
+- `readSensor(index)`
+- `readSensorNB(index)`
+- `readSensorById(sensorId)`
+- `readSensorNBById(sensorId)`
+- `readReading(index, blocking)`
+- `readReadingById(sensorId, blocking)`
+
+#### Acesso Direto aos Drivers
+
+- `getSensor(index)`
+- `getVL53L0XSensor(index)`
+- `getVL53L4CDSensor(index)`
+
+#### API de Debug
+
+- `setDebugConfig(...)`
+- `setDebugOutput(...)`
+- `setDebugLevel(...)`
+- `setDebugScanBeforeInit(...)`
+- `setDebugScanEachStep(...)`
+- `setDebugBootDelay(...)`
+- `setDebugStepDelay(...)`
+- `scanI2C()`
+
+#### Diagnostico
+
+- `getSensorCount()`
+- `getInitializedSensorCount()`
+- `isSensorReady(index)`
+- `getSensorId(index)`
+- `indexOfSensorId(sensorId)`
+- `getSensorSlot(index)`
+
+## License
 
 MIT.
-
-## Referencia da API publica
-
-### Builders e helpers publicos
-
-- `LidarArrayConfig::defaults(model)`: cria uma configuracao base com os defaults do modelo informado.
-- `LidarArrayConfig::forModel(model, numPCF, numSensors, pcf8574Addresses, xshutPins, wire, sensorAddresses)`: cria uma configuracao completa para qualquer modelo suportado.
-- `LidarArrayConfig::forVL53L0X(numPCF, numSensors, pcf8574Addresses, xshutPins, wire, sensorAddresses)`: cria uma configuracao pronta para `VL53L0X`.
-- `LidarArrayConfig::forVL53L4CD(numPCF, numSensors, pcf8574Addresses, xshutPins, wire, sensorAddresses)`: cria uma configuracao pronta para `VL53L4CD`.
-- `LidarArrayDebugConfig::verbose(out, scanBeforeInit, scanEachStep, animated, animationDelayMs, bootDelayMs)`: cria uma configuracao de debug em nivel verbose usando um `Print`.
-
-### Construtores
-
-- `LidarArray(LidarSensorModel model = LidarSensorModel::VL53L0X)`: cria uma instancia nova usando apenas o modelo e os defaults internos.
-- `LidarArray(const LidarArrayConfig &config)`: cria a instancia usando uma configuracao pronta.
-- `LidarArray(uint8_t numPCF, uint8_t numSensors, const uint8_t pcf8574Addresses[], const uint8_t xshutPins[][8])`: construtor legado para arrays `VL53L0X`.
-- `~LidarArray()`: libera os buffers internos alocados pela biblioteca.
-
-### Inicializacao
-
-- `begin()`: inicializa o array usando a configuracao atual e retorna `true` somente se todos os sensores configurados ficarem prontos.
-- `initSensors()`: wrapper legado para `begin()` usando os defaults do fluxo antigo.
-- `initSensors(int measurementT)`: wrapper legado que ajusta o timing budget do `VL53L0X` antes do `begin()`.
-- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange)`: wrapper legado que ajusta timing budget e periodos VCSEL do `VL53L0X`.
-- `initSensors(int measurementT, uint8_t preRange, uint8_t finalRange, int timeout)`: wrapper legado que ajusta timing budget, VCSEL e timeout antes do `begin()`.
-
-### Acesso a configuracao
-
-- `config()`: retorna referencia mutavel para `LidarArrayConfig`, permitindo montar ou alterar a configuracao antes do `begin()`.
-- `config() const`: retorna referencia somente leitura para a configuracao atual.
-- `debug()`: retorna referencia mutavel para `LidarArrayDebugConfig`.
-- `debug() const`: retorna referencia somente leitura para a configuracao de debug atual.
-
-### Setters de configuracao
-
-- `setLayout(numPCF, numSensors, pcf8574Addresses, xshutPins)`: define a topologia do array e o mapa logico dos canais `XSHUT`.
-- `setSensorAddresses(sensorAddresses)`: define um array opcional com o endereco final de cada sensor; passando `nullptr`, volta ao modo automatico.
-- `setWire(wire)`: define qual instancia de `TwoWire` sera usada pelo array.
-- `setTimeout(timeoutMs)`: define o timeout usado pelos drivers Pololu.
-- `setVL53L4CDTiming(timingBudgetMs, interMeasurementMs)`: define o timing do `VL53L4CD`.
-
-### Leitura
-
-- `readSensor(sensorIndex)`: faz leitura bloqueante do sensor informado e retorna apenas a distancia; no modo legado aplica clamp e fallback.
-- `readSensorNB(sensorIndex)`: faz leitura nao bloqueante e retorna apenas a distancia.
-- `readReading(sensorIndex, blocking)`: retorna uma `LidarReading` completa com distancia, status, validade, timeout, data ready e endereco.
-
-### Acesso direto aos drivers
-
-- `getSensor(sensorIndex)`: retorna referencia ao sensor `VL53L0X` para compatibilidade com a API antiga; para outros modelos, nao deve ser usado.
-- `getVL53L0XSensor(sensorIndex)`: retorna ponteiro para o `VL53L0X` informado ou `nullptr` se a instancia nao for desse modelo.
-- `getVL53L4CDSensor(sensorIndex)`: retorna ponteiro para o `VL53L4CD` informado ou `nullptr` se a instancia nao for desse modelo.
-
-### Ajustes de leitura e debug
-
-- `setMeasurementTimingBudget(timingBudget)`: atualiza o timing budget dos sensores `VL53L0X`.
-- `setVcselPulsePeriod(type, period)`: atualiza o periodo VCSEL dos sensores `VL53L0X`; `type 0` significa pre-range e `type 1` significa final-range.
-- `setDebugConfig(config)`: substitui toda a configuracao de debug atual.
-- `setDebugOutput(out)`: define o destino do log de debug.
-- `setDebugLevel(level)`: define o nivel minimo de log emitido.
-- `setDebugScanBeforeInit(enabled)`: habilita ou desabilita o scan antes do shutdown dos ToF.
-- `setDebugScanEachStep(enabled)`: habilita ou desabilita o scan apos cada sensor inicializado.
-- `setDebugBootDelay(delayMs)`: define uma pausa antes da sequencia de boot para facilitar abrir o monitor serial.
-- `setDebugStepDelay(delayMs)`: define a pausa entre as etapas de configuracao quando o debug animado estiver ativo.
-
-### Estado e diagnostico
-
-- `getSensorCount() const`: retorna a quantidade total de sensores configurados.
-- `getInitializedSensorCount() const`: retorna quantos sensores ficaram prontos apos o `begin()`.
-- `isSensorReady(sensorIndex) const`: informa se um indice especifico foi inicializado com sucesso.
-- `scanI2C()`: faz um scan no barramento I2C configurado e retorna a quantidade de dispositivos encontrados.

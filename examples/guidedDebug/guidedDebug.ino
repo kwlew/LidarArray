@@ -12,18 +12,18 @@ void setup()
     Serial.begin(115200);
     Wire.begin();
 
-    // Layout minimo do array.
+    // Minimum array layout.
     lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
     lidar.setTimeout(100);
     lidar.setMeasurementTimingBudget(20000);
     lidar.setVcselPulsePeriod(0, 14);
     lidar.setVcselPulsePeriod(1, 10);
 
-    // O objetivo deste exemplo e acompanhar o boot:
-    // 1. scan do barramento antes da biblioteca agir
-    // 2. pausa para abrir o monitor serial
-    // 3. scan apos desligar todos os ToF
-    // 4. adiciona um sensor por vez e faz novo scan
+    // The goal of this example is to watch the boot sequence:
+    // 1. scan the bus before the library changes anything
+    // 2. pause so you can open the serial monitor
+    // 3. scan again after all ToF sensors are shut down
+    // 4. bring sensors back one by one and rescan the bus
     lidar.setDebugOutput(&Serial);
     lidar.setDebugLevel(LidarDebugLevel::Verbose);
     lidar.setDebugScanBeforeInit(true);
@@ -33,7 +33,7 @@ void setup()
 
     bool ok = lidar.begin();
     Serial.print("begin() -> ");
-    Serial.println(ok ? "OK" : "PARCIAL/FALHA");
+    Serial.println(ok ? "OK" : "PARTIAL/FAILED");
 }
 
 void loop()
@@ -45,7 +45,7 @@ void loop()
         Serial.print("Sensor ");
         Serial.print(i);
         Serial.print(" ready=");
-        Serial.print(lidar.isSensorReady(i) ? "sim" : "nao");
+        Serial.print(lidar.isSensorReady(i) ? "yes" : "no");
         Serial.print(" status=");
         Serial.print(reading.status);
         Serial.print(" dist=");

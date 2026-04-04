@@ -1,7 +1,7 @@
 {
   "name": "LidarArray",
-  "version": "1.1.0",
-  "description": "Library for managing arrays of VL53L0X or VL53L4CD sensors with PCF8574 XSHUT control.",
+  "version": "1.2.0",
+  "description": "Library for managing VL53L0X or VL53L4CD arrays with PCF8574 XSHUT control, sparse sensor mapping, logical IDs, and native I2C debug tools.",
   "keywords": [
     "lidar",
     "tof",

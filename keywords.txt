@@ -9,6 +9,7 @@ LidarArray  KEYWORD1
 LidarArrayConfig  KEYWORD1
 LidarArrayDebugConfig  KEYWORD1
 LidarReading  KEYWORD1
+LidarSensorSlot  KEYWORD1
 LidarSensorModel  KEYWORD1
 LidarDebugLevel  KEYWORD1
 
@@ -19,7 +20,10 @@ begin                       KEYWORD2
 initSensors                 KEYWORD2
 readSensor                  KEYWORD2
 readSensorNB                KEYWORD2
+readSensorById              KEYWORD2
+readSensorNBById            KEYWORD2
 readReading                 KEYWORD2
+readReadingById             KEYWORD2
 getSensor                   KEYWORD2
 getVL53L0XSensor            KEYWORD2
 getVL53L4CDSensor           KEYWORD2
@@ -42,6 +46,9 @@ setDebugStepDelay           KEYWORD2
 getSensorCount              KEYWORD2
 getInitializedSensorCount   KEYWORD2
 isSensorReady               KEYWORD2
+getSensorId                 KEYWORD2
+indexOfSensorId             KEYWORD2
+getSensorSlot               KEYWORD2
 scanI2C                     KEYWORD2
 
 #######################################

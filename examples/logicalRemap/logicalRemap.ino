@@ -2,19 +2,21 @@
 
 uint8_t pcf8574Addresses[] = {0x20};
 
-// Este mapa define a ordem logica dos sensores.
-// Trocar a ordem aqui muda quem sera Sensor 0, Sensor 1, Sensor 2...
+// This map defines the logical order of the sensors.
+// Changing the order here changes which device becomes Sensor 0, Sensor 1, Sensor 2...
+// For a sparse physical layout across multiple PCFs, use the newer
+// LidarSensorSlot-based API shown in sparseSensorMap.
 //
-// Exemplo:
-// - se o sensor fisico que voce quer chamar de Sensor 0 estiver no canal 3,
-//   coloque o canal 3 na primeira posicao.
-// - se o sensor fisico que voce quer chamar de Sensor 3 estiver no canal 0,
-//   coloque o canal 0 na quarta posicao.
+// Example:
+// - if the physical sensor you want to call Sensor 0 is connected to channel 3,
+//   place channel 3 in the first position.
+// - if the physical sensor you want to call Sensor 3 is connected to channel 0,
+//   place channel 0 in the fourth position.
 //
-// Ordem original:
+// Original order:
 // {0, 1, 2, 3, 4, 5, 6, 7}
 //
-// Ordem remapeada:
+// Remapped order:
 uint8_t xshutPins[1][8] = {
     {3, 1, 2, 0, 4, 5, 6, 7}
 };
@@ -26,12 +28,12 @@ void setup()
     Serial.begin(115200);
     Wire.begin();
 
-    Serial.println("Exemplo de remapeio logico.");
-    Serial.println("O canal fisico 3 agora sera o Sensor 0.");
-    Serial.println("O canal fisico 0 agora sera o Sensor 3.");
+    Serial.println("Logical remap example.");
+    Serial.println("Physical channel 3 now becomes Sensor 0.");
+    Serial.println("Physical channel 0 now becomes Sensor 3.");
 
     if (!lidar.initSensors()) {
-        Serial.println("Inicializacao parcial detectada.");
+        Serial.println("Partial initialization detected.");
     }
 }
 
@@ -39,9 +41,9 @@ void loop()
 {
     for (uint8_t i = 0; i < lidar.getSensorCount(); ++i)
     {
-        Serial.print("Indice logico ");
+        Serial.print("Logical index ");
         Serial.print(i);
-        Serial.print(" -> distancia = ");
+        Serial.print(" -> distance = ");
         Serial.print(lidar.readSensor(i));
         Serial.println(" mm");
     }
