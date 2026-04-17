@@ -1,29 +1,33 @@
 #include <LidarArray.h>
 
 const uint8_t pcf8574Addresses[] = {0x20};
-const uint8_t xshutPins[] = {
-    0, 1, 2, 3, 4, 5, 6, 7
+const LidarSensorSlot sensorMap[] = {
+    LIDAR_SLOT(0, pcf_p0, TOF_VL53L0X, 0),
+    LIDAR_SLOT(0, pcf_p1, TOF_VL53L0X, 1),
+    LIDAR_SLOT(0, pcf_p2, TOF_VL53L0X, 2),
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L0X, 3)
 };
 
-LidarArray lidar(LidarSensorModel::VL53L0X);
+LidarArray lidar(TOF_VL53L0X);
 
 void setup()
 {
     Serial.begin(115200);
     Wire.begin();
 
-    // Minimum array layout.
-    lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    // Even when the array is simple, the sparse slot map makes the boot order,
+    // the physical pins, and the future migration path explicit.
+    lidar.setLayout(1, 4, pcf8574Addresses, sensorMap);
     lidar.setTimeout(100);
     lidar.setMeasurementTimingBudget(20000);
     lidar.setVcselPulsePeriod(0, 14);
     lidar.setVcselPulsePeriod(1, 10);
 
-    // The goal of this example is to watch the boot sequence:
-    // 1. scan the bus before the library changes anything
-    // 2. pause so you can open the serial monitor
-    // 3. scan again after all ToF sensors are shut down
-    // 4. bring sensors back one by one and rescan the bus
+    // Expected boot flow:
+    // 1. scan the bus before the library changes sensor state
+    // 2. wait so the serial monitor can attach
+    // 3. shut down all ToF sensors
+    // 4. wake one slot at a time and rescan after every step
     lidar.setDebugOutput(&Serial);
     lidar.setDebugLevel(LidarDebugLevel::Verbose);
     lidar.setDebugScanBeforeInit(true);
@@ -31,21 +35,24 @@ void setup()
     lidar.setDebugBootDelay(1500);
     lidar.setDebugStepDelay(500);
 
-    bool ok = lidar.begin();
+    const bool ok = lidar.begin();
     Serial.print("begin() -> ");
     Serial.println(ok ? "OK" : "PARTIAL/FAILED");
 }
 
 void loop()
 {
-    for (uint8_t i = 0; i < lidar.getSensorCount(); ++i)
+    for (uint8_t index = 0; index < lidar.getSensorCount(); ++index)
     {
-        LidarReading reading = lidar.readReading(i, false);
+        const LidarSensorSlot *slot = lidar.getSensorSlot(index);
+        const LidarReading reading = lidar.readReading(index, false);
 
-        Serial.print("Sensor ");
-        Serial.print(i);
+        Serial.print("idx=");
+        Serial.print(index);
+        Serial.print(" pin=");
+        Serial.print(slot != nullptr ? slot->pin : 255);
         Serial.print(" ready=");
-        Serial.print(lidar.isSensorReady(i) ? "yes" : "no");
+        Serial.print(lidar.isSensorReady(index) ? "yes" : "no");
         Serial.print(" status=");
         Serial.print(reading.status);
         Serial.print(" dist=");

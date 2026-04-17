@@ -2,6 +2,81 @@
 
 #include <new>
 
+namespace
+{
+bool isConcreteModel(LidarSensorModel model)
+{
+    return model == LidarSensorModel::VL53L0X || model == LidarSensorModel::VL53L4CD;
+}
+
+LidarSensorModel resolveSlotModel(const LidarSensorSlot &slot, LidarSensorModel defaultModel)
+{
+    return slot.model == LidarSensorModel::InheritArrayDefault ? defaultModel : slot.model;
+}
+
+bool resolveModelCounts(const LidarArrayConfig &config, uint8_t &vl53l0xCount, uint8_t &vl53l4cdCount)
+{
+    vl53l0xCount = 0;
+    vl53l4cdCount = 0;
+
+    if (config.numSensors == 0)
+    {
+        return false;
+    }
+
+    if (config.sensorMap != nullptr)
+    {
+        for (uint8_t sensorIndex = 0; sensorIndex < config.numSensors; ++sensorIndex)
+        {
+            const LidarSensorModel model = resolveSlotModel(config.sensorMap[sensorIndex], config.model);
+            if (model == LidarSensorModel::VL53L0X)
+            {
+                ++vl53l0xCount;
+            }
+            else if (model == LidarSensorModel::VL53L4CD)
+            {
+                ++vl53l4cdCount;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    if (config.xshutPins == nullptr || !isConcreteModel(config.model))
+    {
+        return false;
+    }
+
+    if (config.model == LidarSensorModel::VL53L0X)
+    {
+        vl53l0xCount = config.numSensors;
+    }
+    else
+    {
+        vl53l4cdCount = config.numSensors;
+    }
+
+    return true;
+}
+
+const __FlashStringHelper *sensorModelLabel(LidarSensorModel model)
+{
+    switch (model)
+    {
+    case LidarSensorModel::VL53L0X:
+        return F("VL53L0X");
+    case LidarSensorModel::VL53L4CD:
+        return F("VL53L4CD");
+    default:
+        return F("inherit");
+    }
+}
+} // namespace
+
 LidarArrayConfig LidarArrayConfig::defaults(LidarSensorModel model)
 {
     LidarArrayConfig config;
@@ -179,6 +254,8 @@ void LidarArray::resetMembers()
     configValid_ = false;
     explicitSensorMap_ = false;
     filterStorageCount_ = 0;
+    vl53l0xSensorCount_ = 0;
+    vl53l4cdSensorCount_ = 0;
 
     model_ = LidarSensorModel::VL53L0X;
     wire_ = &Wire;
@@ -202,6 +279,7 @@ void LidarArray::resetMembers()
 
     pcf8574Addresses_ = nullptr;
     pcf8574States_ = nullptr;
+    sensorDriverIndices_ = nullptr;
     sensorSlots_ = nullptr;
     sensorReady_ = nullptr;
     sensorFilterConfigs_ = nullptr;
@@ -214,7 +292,7 @@ void LidarArray::resetMembers()
     config_ = LidarArrayConfig::defaults();
 }
 
-bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensorModel model)
+bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, uint8_t vl53l0xSensorCount, uint8_t vl53l4cdSensorCount)
 {
     if (numPCF == 0 || numSensors == 0)
     {
@@ -224,15 +302,18 @@ bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensor
     numPCF_ = numPCF;
     sensorCount_ = numSensors;
     totalSlots_ = static_cast<uint8_t>(numPCF * kSlotsPerPcf);
-    model_ = model;
+    vl53l0xSensorCount_ = vl53l0xSensorCount;
+    vl53l4cdSensorCount_ = vl53l4cdSensorCount;
 
     pcf8574Addresses_ = new (std::nothrow) uint8_t[numPCF_];
     pcf8574States_ = new (std::nothrow) uint8_t[numPCF_];
+    sensorDriverIndices_ = new (std::nothrow) uint8_t[sensorCount_];
     sensorSlots_ = new (std::nothrow) LidarSensorSlot[sensorCount_];
     sensorReady_ = new (std::nothrow) bool[sensorCount_];
 
     if (pcf8574Addresses_ == nullptr ||
         pcf8574States_ == nullptr ||
+        sensorDriverIndices_ == nullptr ||
         sensorSlots_ == nullptr ||
         sensorReady_ == nullptr)
     {
@@ -240,18 +321,19 @@ bool LidarArray::allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensor
         return false;
     }
 
-    if (model_ == LidarSensorModel::VL53L0X)
+    if (vl53l0xSensorCount_ > 0)
     {
-        vl53l0xSensors_ = new (std::nothrow) VL53L0X[sensorCount_];
+        vl53l0xSensors_ = new (std::nothrow) VL53L0X[vl53l0xSensorCount_];
         if (vl53l0xSensors_ == nullptr)
         {
             releaseStorage();
             return false;
         }
     }
-    else
+
+    if (vl53l4cdSensorCount_ > 0)
     {
-        vl53l4cdSensors_ = new (std::nothrow) VL53L4CD[sensorCount_];
+        vl53l4cdSensors_ = new (std::nothrow) VL53L4CD[vl53l4cdSensorCount_];
         if (vl53l4cdSensors_ == nullptr)
         {
             releaseStorage();
@@ -266,6 +348,7 @@ void LidarArray::releaseStorage()
 {
     delete[] pcf8574Addresses_;
     delete[] pcf8574States_;
+    delete[] sensorDriverIndices_;
     delete[] sensorSlots_;
     delete[] sensorReady_;
     delete[] vl53l0xSensors_;
@@ -273,6 +356,7 @@ void LidarArray::releaseStorage()
 
     pcf8574Addresses_ = nullptr;
     pcf8574States_ = nullptr;
+    sensorDriverIndices_ = nullptr;
     sensorSlots_ = nullptr;
     sensorReady_ = nullptr;
     vl53l0xSensors_ = nullptr;
@@ -284,6 +368,8 @@ void LidarArray::releaseStorage()
     configCopied_ = false;
     configValid_ = false;
     explicitSensorMap_ = false;
+    vl53l0xSensorCount_ = 0;
+    vl53l4cdSensorCount_ = 0;
 }
 
 bool LidarArray::ensureFilterStorage(uint8_t numSensors)
@@ -364,6 +450,12 @@ bool LidarArray::copyLegacyLayout(const LidarArrayConfig &config)
         }
     }
 
+    if (!isConcreteModel(config.model))
+    {
+        return false;
+    }
+
+    uint8_t driverIndex = 0;
     for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
     {
         sensorSlots_[sensorIndex].pcfIndex = sensorIndex / kSlotsPerPcf;
@@ -372,6 +464,8 @@ bool LidarArray::copyLegacyLayout(const LidarArrayConfig &config)
             ? config.sensorAddresses[sensorIndex]
             : static_cast<uint8_t>(kDefaultAddressBase + sensorIndex);
         sensorSlots_[sensorIndex].sensorId = sensorIndex;
+        sensorSlots_[sensorIndex].model = config.model;
+        sensorDriverIndices_[sensorIndex] = driverIndex++;
         sensorReady_[sensorIndex] = false;
     }
 
@@ -385,9 +479,13 @@ bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
         return false;
     }
 
+    uint8_t vl53l0xIndex = 0;
+    uint8_t vl53l4cdIndex = 0;
+
     for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
     {
         sensorSlots_[sensorIndex] = config.sensorMap[sensorIndex];
+        sensorSlots_[sensorIndex].model = resolveSlotModel(config.sensorMap[sensorIndex], config.model);
 
         if (sensorSlots_[sensorIndex].address == 0)
         {
@@ -397,6 +495,19 @@ bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
         if (sensorSlots_[sensorIndex].sensorId < 0)
         {
             sensorSlots_[sensorIndex].sensorId = sensorIndex;
+        }
+
+        if (sensorSlots_[sensorIndex].model == LidarSensorModel::VL53L0X)
+        {
+            sensorDriverIndices_[sensorIndex] = vl53l0xIndex++;
+        }
+        else if (sensorSlots_[sensorIndex].model == LidarSensorModel::VL53L4CD)
+        {
+            sensorDriverIndices_[sensorIndex] = vl53l4cdIndex++;
+        }
+        else
+        {
+            return false;
         }
 
         sensorReady_[sensorIndex] = false;
@@ -446,6 +557,14 @@ void LidarArray::copyConfig(const LidarArrayConfig &config)
 
 bool LidarArray::syncConfiguration()
 {
+    uint8_t desiredVl53l0xCount = 0;
+    uint8_t desiredVl53l4cdCount = 0;
+    if (!resolveModelCounts(config_, desiredVl53l0xCount, desiredVl53l4cdCount))
+    {
+        configValid_ = false;
+        return false;
+    }
+
     if (!ensureFilterStorage(config_.numSensors))
     {
         configValid_ = false;
@@ -455,16 +574,18 @@ bool LidarArray::syncConfiguration()
     const bool needsReallocation =
         pcf8574Addresses_ == nullptr ||
         pcf8574States_ == nullptr ||
+        sensorDriverIndices_ == nullptr ||
         sensorSlots_ == nullptr ||
         sensorReady_ == nullptr ||
         numPCF_ != config_.numPCF ||
         sensorCount_ != config_.numSensors ||
-        model_ != config_.model;
+        vl53l0xSensorCount_ != desiredVl53l0xCount ||
+        vl53l4cdSensorCount_ != desiredVl53l4cdCount;
 
     if (needsReallocation)
     {
         releaseStorage();
-        if (!allocateStorage(config_.numPCF, config_.numSensors, config_.model))
+        if (!allocateStorage(config_.numPCF, config_.numSensors, desiredVl53l0xCount, desiredVl53l4cdCount))
         {
             configValid_ = false;
             return false;
@@ -484,8 +605,15 @@ bool LidarArray::validateConfiguration() const
         wire_ == nullptr ||
         pcf8574Addresses_ == nullptr ||
         pcf8574States_ == nullptr ||
+        sensorDriverIndices_ == nullptr ||
         sensorSlots_ == nullptr ||
         sensorReady_ == nullptr)
+    {
+        return false;
+    }
+
+    if ((vl53l0xSensorCount_ > 0 && vl53l0xSensors_ == nullptr) ||
+        (vl53l4cdSensorCount_ > 0 && vl53l4cdSensors_ == nullptr))
     {
         return false;
     }
@@ -520,6 +648,11 @@ bool LidarArray::validateConfiguration() const
             return false;
         }
 
+        if (!isConcreteModel(slot.model))
+        {
+            return false;
+        }
+
         if (slot.sensorId < 0)
         {
             return false;
@@ -528,6 +661,12 @@ bool LidarArray::validateConfiguration() const
         if (slot.address < kMinimumManualAddress ||
             slot.address > 0x77 ||
             slot.address == kTofDefaultAddress)
+        {
+            return false;
+        }
+
+        if ((slot.model == LidarSensorModel::VL53L0X && sensorDriverIndices_[i] >= vl53l0xSensorCount_) ||
+            (slot.model == LidarSensorModel::VL53L4CD && sensorDriverIndices_[i] >= vl53l4cdSensorCount_))
         {
             return false;
         }
@@ -748,6 +887,20 @@ void LidarArray::setVL53L4CDTiming(uint8_t timingBudgetMs, uint32_t interMeasure
     config_.vl53l4cdInterMeasurementMs = interMeasurementMs;
     vl53l4cdTimingBudgetMs_ = timingBudgetMs;
     vl53l4cdInterMeasurementMs_ = interMeasurementMs;
+
+    for (uint8_t i = 0; i < sensorCount_; ++i)
+    {
+        VL53L4CD *sensor = getVL53L4CDSensor(i);
+        if (sensor == nullptr || !sensorReady_[i])
+        {
+            continue;
+        }
+
+        if (!sensor->setRangeTiming(vl53l4cdTimingBudgetMs_, vl53l4cdInterMeasurementMs_))
+        {
+            logSensorStep(i, F("failed to update VL53L4CD timing"), LidarDebugLevel::Errors);
+        }
+    }
 }
 
 void LidarArray::setFilterConfig(const LidarFilterConfig &config)
@@ -921,12 +1074,16 @@ LidarReading LidarArray::readReading(uint8_t sensorIndex, bool blocking)
         return buildInvalidReading(sensorIndex, kLibraryStatusNotReady);
     }
 
-    if (model_ == LidarSensorModel::VL53L0X)
+    if (sensorSlots_[sensorIndex].model == LidarSensorModel::VL53L0X)
     {
         return readVL53L0X(sensorIndex, blocking);
     }
+    if (sensorSlots_[sensorIndex].model == LidarSensorModel::VL53L4CD)
+    {
+        return readVL53L4CD(sensorIndex, blocking);
+    }
 
-    return readVL53L4CD(sensorIndex, blocking);
+    return buildInvalidReading(sensorIndex, kLibraryStatusNotReady);
 }
 
 LidarReading LidarArray::readReadingById(int16_t sensorId, bool blocking)
@@ -996,20 +1153,28 @@ VL53L0X &LidarArray::getSensor(uint8_t sensorIndex)
 
 VL53L0X *LidarArray::getVL53L0XSensor(uint8_t sensorIndex)
 {
-    if (model_ != LidarSensorModel::VL53L0X || sensorIndex >= sensorCount_)
+    if (sensorIndex >= sensorCount_ ||
+        sensorSlots_ == nullptr ||
+        sensorDriverIndices_ == nullptr ||
+        vl53l0xSensors_ == nullptr ||
+        sensorSlots_[sensorIndex].model != LidarSensorModel::VL53L0X)
     {
         return nullptr;
     }
-    return &vl53l0xSensors_[sensorIndex];
+    return &vl53l0xSensors_[sensorDriverIndices_[sensorIndex]];
 }
 
 VL53L4CD *LidarArray::getVL53L4CDSensor(uint8_t sensorIndex)
 {
-    if (model_ != LidarSensorModel::VL53L4CD || sensorIndex >= sensorCount_)
+    if (sensorIndex >= sensorCount_ ||
+        sensorSlots_ == nullptr ||
+        sensorDriverIndices_ == nullptr ||
+        vl53l4cdSensors_ == nullptr ||
+        sensorSlots_[sensorIndex].model != LidarSensorModel::VL53L4CD)
     {
         return nullptr;
     }
-    return &vl53l4cdSensors_[sensorIndex];
+    return &vl53l4cdSensors_[sensorDriverIndices_[sensorIndex]];
 }
 
 void LidarArray::setMeasurementTimingBudget(uint32_t timingBudget)
@@ -1017,15 +1182,15 @@ void LidarArray::setMeasurementTimingBudget(uint32_t timingBudget)
     config_.vl53l0xMeasurementTimingBudgetUs = timingBudget;
     vl53l0xMeasurementTimingBudgetUs_ = timingBudget;
 
-    if (model_ != LidarSensorModel::VL53L0X)
-    {
-        logMessage(LidarDebugLevel::Errors, F("setMeasurementTimingBudget is only applied to VL53L0X instances."));
-        return;
-    }
-
     for (uint8_t i = 0; i < sensorCount_; ++i)
     {
-        if (sensorReady_[i] && !vl53l0xSensors_[i].setMeasurementTimingBudget(vl53l0xMeasurementTimingBudgetUs_))
+        VL53L0X *sensor = getVL53L0XSensor(i);
+        if (sensor == nullptr || !sensorReady_[i])
+        {
+            continue;
+        }
+
+        if (!sensor->setMeasurementTimingBudget(vl53l0xMeasurementTimingBudgetUs_))
         {
             logSensorStep(i, F("failed to update timing budget"), LidarDebugLevel::Errors);
         }
@@ -1047,15 +1212,10 @@ void LidarArray::setVcselPulsePeriod(uint8_t type, uint8_t period)
     config_.applyVl53l0xVcselPeriods = true;
     applyVl53l0xVcselPeriods_ = true;
 
-    if (model_ != LidarSensorModel::VL53L0X)
-    {
-        logMessage(LidarDebugLevel::Errors, F("setVcselPulsePeriod is only applied to VL53L0X instances."));
-        return;
-    }
-
     for (uint8_t i = 0; i < sensorCount_; ++i)
     {
-        if (!sensorReady_[i])
+        VL53L0X *sensor = getVL53L0XSensor(i);
+        if (sensor == nullptr || !sensorReady_[i])
         {
             continue;
         }
@@ -1063,11 +1223,11 @@ void LidarArray::setVcselPulsePeriod(uint8_t type, uint8_t period)
         bool applied = false;
         if (type == 0)
         {
-            applied = vl53l0xSensors_[i].setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, period);
+            applied = sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, period);
         }
         else if (type == 1)
         {
-            applied = vl53l0xSensors_[i].setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, period);
+            applied = sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, period);
         }
 
         if (!applied)
@@ -1138,6 +1298,16 @@ int16_t LidarArray::getSensorId(uint8_t sensorIndex) const
     return sensorSlots_[sensorIndex].sensorId;
 }
 
+LidarSensorModel LidarArray::getSensorModel(uint8_t sensorIndex) const
+{
+    if (sensorIndex >= sensorCount_ || sensorSlots_ == nullptr)
+    {
+        return LidarSensorModel::InheritArrayDefault;
+    }
+
+    return sensorSlots_[sensorIndex].model;
+}
+
 int16_t LidarArray::indexOfSensorId(int16_t sensorId) const
 {
     if (sensorSlots_ == nullptr)
@@ -1154,6 +1324,17 @@ int16_t LidarArray::indexOfSensorId(int16_t sensorId) const
     }
 
     return -1;
+}
+
+LidarSensorModel LidarArray::getSensorModelById(int16_t sensorId) const
+{
+    const int16_t sensorIndex = indexOfSensorId(sensorId);
+    if (sensorIndex < 0)
+    {
+        return LidarSensorModel::InheritArrayDefault;
+    }
+
+    return getSensorModel(static_cast<uint8_t>(sensorIndex));
 }
 
 const LidarSensorSlot *LidarArray::getSensorSlot(uint8_t sensorIndex) const
@@ -1235,7 +1416,8 @@ bool LidarArray::bringSensorOutOfShutdown(uint8_t sensorIndex)
 
 bool LidarArray::initializeSensor(uint8_t sensorIndex)
 {
-    const uint8_t address = sensorSlots_[sensorIndex].address;
+    const LidarSensorSlot &slot = sensorSlots_[sensorIndex];
+    const uint8_t address = slot.address;
 
     logSensorStep(sensorIndex, F("starting initialization"), LidarDebugLevel::Info);
 
@@ -1246,18 +1428,17 @@ bool LidarArray::initializeSensor(uint8_t sensorIndex)
     }
 
     bool ready = false;
-    if (model_ == LidarSensorModel::VL53L0X)
+    if (slot.model == LidarSensorModel::VL53L0X)
     {
         ready = initializeVL53L0X(sensorIndex, address);
     }
-    else
+    else if (slot.model == LidarSensorModel::VL53L4CD)
     {
         ready = initializeVL53L4CD(sensorIndex, address);
     }
 
     if (!ready)
     {
-        const LidarSensorSlot &slot = sensorSlots_[sensorIndex];
         pcf8574Write(slot.pcfIndex, slot.pin, false);
         if (shutdownDelayMs_ > 0)
         {
@@ -1280,7 +1461,13 @@ bool LidarArray::initializeSensor(uint8_t sensorIndex)
 
 bool LidarArray::initializeVL53L0X(uint8_t sensorIndex, uint8_t address)
 {
-    VL53L0X &sensor = vl53l0xSensors_[sensorIndex];
+    VL53L0X *sensorPointer = getVL53L0XSensor(sensorIndex);
+    if (sensorPointer == nullptr)
+    {
+        return false;
+    }
+
+    VL53L0X &sensor = *sensorPointer;
     sensor.setBus(wire_);
     sensor.setTimeout(timeoutMs_);
 
@@ -1315,7 +1502,13 @@ bool LidarArray::initializeVL53L0X(uint8_t sensorIndex, uint8_t address)
 
 bool LidarArray::initializeVL53L4CD(uint8_t sensorIndex, uint8_t address)
 {
-    VL53L4CD &sensor = vl53l4cdSensors_[sensorIndex];
+    VL53L4CD *sensorPointer = getVL53L4CDSensor(sensorIndex);
+    if (sensorPointer == nullptr)
+    {
+        return false;
+    }
+
+    VL53L4CD &sensor = *sensorPointer;
     sensor.setBus(wire_);
     sensor.setTimeout(timeoutMs_);
 
@@ -1375,6 +1568,7 @@ LidarReading LidarArray::buildInvalidReading(uint8_t sensorIndex, uint8_t status
     {
         reading.address = sensorSlots_[sensorIndex].address;
         reading.sensorId = sensorSlots_[sensorIndex].sensorId;
+        reading.model = sensorSlots_[sensorIndex].model;
     }
     return reading;
 }
@@ -1618,10 +1812,17 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
 
 LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)
 {
-    VL53L0X &sensor = vl53l0xSensors_[sensorIndex];
+    VL53L0X *sensorPointer = getVL53L0XSensor(sensorIndex);
+    if (sensorPointer == nullptr)
+    {
+        return buildInvalidReading(sensorIndex, kLibraryStatusNotReady);
+    }
+
+    VL53L0X &sensor = *sensorPointer;
     LidarReading reading;
     reading.address = sensorSlots_[sensorIndex].address;
     reading.sensorId = sensorSlots_[sensorIndex].sensorId;
+    reading.model = sensorSlots_[sensorIndex].model;
 
     if (!blocking)
     {
@@ -1658,10 +1859,17 @@ LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)
 
 LidarReading LidarArray::readVL53L4CD(uint8_t sensorIndex, bool blocking)
 {
-    VL53L4CD &sensor = vl53l4cdSensors_[sensorIndex];
+    VL53L4CD *sensorPointer = getVL53L4CDSensor(sensorIndex);
+    if (sensorPointer == nullptr)
+    {
+        return buildInvalidReading(sensorIndex, kLibraryStatusNotReady);
+    }
+
+    VL53L4CD &sensor = *sensorPointer;
     LidarReading reading;
     reading.address = sensorSlots_[sensorIndex].address;
     reading.sensorId = sensorSlots_[sensorIndex].sensorId;
+    reading.model = sensorSlots_[sensorIndex].model;
 
     if (!blocking && !sensor.dataReady())
     {
@@ -1759,6 +1967,8 @@ void LidarArray::logSensorStep(
     debugConfig_.out->print(slot.pcfIndex);
     debugConfig_.out->print(F(" pin "));
     debugConfig_.out->print(slot.pin);
+    debugConfig_.out->print(F(", "));
+    debugConfig_.out->print(sensorModelLabel(slot.model));
     debugConfig_.out->print(F(") @ 0x"));
     if (slot.address < 0x10)
     {

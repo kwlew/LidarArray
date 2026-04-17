@@ -7,23 +7,29 @@ const uint8_t pcf8574Addresses[] = {0x20, 0x21};
 // - which physical PCF pin is wired to XSHUT
 // - which final address the sensor should receive (0 = automatic)
 // - which public ID it should expose (-1 = reuse the internal index)
+// - which model this slot uses (or TOF_INHERIT_DEFAULT to reuse config.model)
 const LidarSensorSlot sensorMap[] = {
-    {0, 3, 0, 0},
-    {0, 4, 0, 1},
-    {0, 7, 0, 2},
-    {1, 0, 0, 10},
-    {1, 2, 0, 11},
-    {1, 4, 0, 12},
-    {1, 5, 0, 13},
-    {1, 7, 0, 14}
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p4, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p7, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(1, pcf_p0, TOF_VL53L4CD, 10),
+    LIDAR_SLOT(1, pcf_p2, TOF_VL53L4CD, 11),
+    LIDAR_SLOT(1, pcf_p4, TOF_VL53L4CD, 12),
+
+    // The legacy 4-field form still works and inherits lidar.config().model.
+    {1, pcf_p5, 0, 13},
+    {1, pcf_p7, 0, 14}
 };
 
-LidarArray lidar(LidarSensorModel::VL53L4CD);
+LidarArray lidar(TOF_VL53L4CD);
 
 void setup()
 {
     Serial.begin(115200);
     Wire.begin();
+
+    // config().model remains the array default used by 4-field sparse slots.
+    lidar.config().model = TOF_VL53L4CD;
 
     // The array order remains the internal logical order 0..N-1.
     // The sensorId field lets you expose different public names, such as 10..14.
@@ -57,6 +63,8 @@ void loop()
         Serial.print(slot != nullptr ? slot->pcfIndex : 255);
         Serial.print(", pin=");
         Serial.print(slot != nullptr ? slot->pin : 255);
+        Serial.print(", model=");
+        Serial.print(lidar.getSensorModelById(sensorId) == TOF_VL53L0X ? "VL53L0X" : "VL53L4CD");
         Serial.print(", addr=0x");
         if (reading.address < 0x10) {
             Serial.print('0');

@@ -1,47 +1,56 @@
 #include <LidarArray.h>
 
-// Two expanders provide 16 possible XSHUT channels.
-// Logical indices remain sequential even when moving from one PCF to the next.
-// This example uses the legacy dense layout.
-// If you need sensors on arbitrary pins across multiple PCFs,
-// prefer the sparseSensorMap example with LidarSensorSlot.
-uint8_t pcf8574Addresses[] = {0x20, 0x21};
-
-// The first 8 logical indices live on PCF 0x20.
-// The next 8 logical indices live on PCF 0x21.
-uint8_t xshutPins[2][8] = {
-    {0, 1, 2, 3, 4, 5, 6, 7},
-    {0, 1, 2, 3, 4, 5, 6, 7}
+// This example keeps the same model on every slot, but spreads the array
+// across two PCF8574 expanders. The sensor order follows the order of this
+// table, not the numeric order of the pins.
+const uint8_t pcf8574Addresses[] = {0x20, 0x21};
+const LidarSensorSlot sensorMap[] = {
+    LIDAR_SLOT(0, pcf_p0, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p2, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p5, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(0, pcf_p7, TOF_VL53L4CD, 3),
+    LIDAR_SLOT(1, pcf_p1, TOF_VL53L4CD, 4),
+    LIDAR_SLOT(1, pcf_p3, TOF_VL53L4CD, 5),
+    LIDAR_SLOT(1, pcf_p4, TOF_VL53L4CD, 6),
+    LIDAR_SLOT(1, pcf_p6, TOF_VL53L4CD, 7)
 };
 
-LidarArray lidar(2, 16, pcf8574Addresses, xshutPins);
+LidarArray lidar(TOF_VL53L4CD);
 
-void setup() 
+void setup()
 {
     Serial.begin(115200);
     Wire.begin();
 
-    // If one sensor fails, the others can still continue working.
-    if (!lidar.initSensors()) {
+    lidar.setLayout(2, 8, pcf8574Addresses, sensorMap);
+    lidar.setTimeout(100);
+    lidar.setVL53L4CDTiming(50, 0);
+
+    if (!lidar.begin()) {
         Serial.println("Partial initialization detected.");
     }
 }
 
-void loop() 
+void loop()
 {
-    for (uint8_t i = 0; i < lidar.getSensorCount(); i++) 
+    for (uint8_t index = 0; index < lidar.getSensorCount(); ++index)
     {
-        uint16_t distance = lidar.readSensor(i);
+        const LidarSensorSlot *slot = lidar.getSensorSlot(index);
+        const LidarReading reading = lidar.readReading(index, true);
 
-        // Example:
-        // Sensor 0..7  -> PCF 0x20
-        // Sensor 8..15 -> PCF 0x21
-        Serial.print("Sensor ");
-        Serial.print(i);
-        Serial.print(": ");
-        Serial.print(distance);
-        Serial.print(" mm\t");
+        Serial.print("idx=");
+        Serial.print(index);
+        Serial.print(" id=");
+        Serial.print(reading.sensorId);
+        Serial.print(" pcf=");
+        Serial.print(slot != nullptr ? slot->pcfIndex : 255);
+        Serial.print(" pin=");
+        Serial.print(slot != nullptr ? slot->pin : 255);
+        Serial.print(" dist=");
+        Serial.print(reading.distanceMm);
+        Serial.println(" mm");
     }
+
     Serial.println();
-    delay(100);
+    delay(140);
 }

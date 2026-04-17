@@ -12,11 +12,45 @@
  */
 enum class LidarSensorModel : uint8_t
 {
+    /// Reuse the array default model stored in LidarArrayConfig::model.
+    InheritArrayDefault = 0,
     /// Use the Pololu VL53L0X driver.
-    VL53L0X,
+    VL53L0X = 1,
     /// Use the Pololu VL53L4CD driver.
-    VL53L4CD
+    VL53L4CD = 2
 };
+
+/// Short alias for slots that inherit the array default model.
+constexpr LidarSensorModel TOF_INHERIT_DEFAULT = LidarSensorModel::InheritArrayDefault;
+/// Short alias for a VL53L0X slot model.
+constexpr LidarSensorModel TOF_VL53L0X = LidarSensorModel::VL53L0X;
+/// Short alias for a VL53L4CD slot model.
+constexpr LidarSensorModel TOF_VL53L4CD = LidarSensorModel::VL53L4CD;
+
+/**
+ * @brief Short pin tokens for the eight PCF8574 outputs.
+ */
+enum LidarPcfPin : uint8_t
+{
+    pcf_p0 = 0,
+    pcf_p1 = 1,
+    pcf_p2 = 2,
+    pcf_p3 = 3,
+    pcf_p4 = 4,
+    pcf_p5 = 5,
+    pcf_p6 = 6,
+    pcf_p7 = 7
+};
+
+#ifndef LIDAR_SLOT
+#define LIDAR_SLOT(pcf, pin, model, id) \
+    {static_cast<uint8_t>(pcf), static_cast<uint8_t>(pin), static_cast<uint8_t>(0), static_cast<int16_t>(id), model}
+#endif
+
+#ifndef LIDAR_SLOT_ADDR
+#define LIDAR_SLOT_ADDR(pcf, pin, addr, model, id) \
+    {static_cast<uint8_t>(pcf), static_cast<uint8_t>(pin), static_cast<uint8_t>(addr), static_cast<int16_t>(id), model}
+#endif
 
 /**
  * @brief Verbosity levels used by the built-in debug output.
@@ -35,11 +69,12 @@ enum class LidarDebugLevel : uint8_t
 
 /**
  * @brief Describes the physical and logical placement of one sensor.
- * @note Slot literal order is {pcfIndex, pin, address, sensorId}.
+ * @note Slot literal order is {pcfIndex, pin, address, sensorId, model}.
  * @code
  * const LidarSensorSlot sensorMap[] = {
- *     {0, 3, 0, 10},   // PCF 0, pin 3, automatic address, public ID 10
- *     {1, 4, 0x36, -1} // PCF 1, pin 4, manual address 0x36, reuse internal index as ID
+ *     LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 10),
+ *     {1, pcf_p4, 0x36, -1, TOF_VL53L0X},
+ *     {1, pcf_p5, 0, 11} // legacy 4-field form still works and inherits config.model
  * };
  * @endcode
  */
@@ -53,6 +88,8 @@ struct LidarSensorSlot
     uint8_t address = 0;
     /// Public logical ID exposed by the library. Use -1 to reuse the internal index.
     int16_t sensorId = -1;
+    /// Sensor model used by this slot. Use InheritArrayDefault to reuse LidarArrayConfig::model.
+    LidarSensorModel model = LidarSensorModel::InheritArrayDefault;
 };
 
 /**
@@ -74,6 +111,8 @@ struct LidarReading
     uint8_t address = 0;
     /// Public logical ID associated with the sensor that produced this reading.
     int16_t sensorId = -1;
+    /// Resolved sensor model associated with this reading.
+    LidarSensorModel model = LidarSensorModel::InheritArrayDefault;
 };
 
 /**
@@ -130,7 +169,7 @@ struct LidarFilteredReading
  */
 struct LidarArrayConfig
 {
-    /// Sensor model used by this array instance.
+    /// Default sensor model used by the array and by slots that inherit their model.
     LidarSensorModel model = LidarSensorModel::VL53L0X;
     /// Number of PCF8574 expanders used to drive XSHUT lines.
     uint8_t numPCF = 0;
@@ -163,7 +202,7 @@ struct LidarArrayConfig
     /// Optional final address per sensor for the legacy dense layout.
     const uint8_t *sensorAddresses = nullptr;
     /// Recommended sparse layout mapping for mixed PCF/pin placement.
-    /// Each item uses {pcfIndex, pin, address, sensorId}. Do not combine this with sensorAddresses.
+    /// Each item uses {pcfIndex, pin, address, sensorId, model}. Do not combine this with sensorAddresses.
     const LidarSensorSlot *sensorMap = nullptr;
 
     /**
@@ -198,7 +237,7 @@ struct LidarArrayConfig
      * @param numSensors Number of active sensors.
      * @param pcf8574Addresses I2C addresses for the PCF8574 expanders.
      * @param sensorMap Sparse physical mapping for the active sensors.
-     * Each item uses {pcfIndex, pin, address, sensorId}.
+     * Each item uses {pcfIndex, pin, address, sensorId, model}.
      * @param wire I2C bus instance used by the library.
      * @return A populated configuration for the selected model.
      * @note When sensorMap is used, define manual addresses inside each slot instead of using sensorAddresses.
@@ -233,7 +272,7 @@ struct LidarArrayConfig
      * @param numSensors Number of active sensors.
      * @param pcf8574Addresses I2C addresses for the PCF8574 expanders.
      * @param sensorMap Sparse physical mapping for the active sensors.
-     * Each item uses {pcfIndex, pin, address, sensorId}.
+     * Each item uses {pcfIndex, pin, address, sensorId, model}.
      * @param wire I2C bus instance used by the library.
      * @return A VL53L0X configuration object.
      */
@@ -266,7 +305,7 @@ struct LidarArrayConfig
      * @param numSensors Number of active sensors.
      * @param pcf8574Addresses I2C addresses for the PCF8574 expanders.
      * @param sensorMap Sparse physical mapping for the active sensors.
-     * Each item uses {pcfIndex, pin, address, sensorId}.
+     * Each item uses {pcfIndex, pin, address, sensorId, model}.
      * @param wire I2C bus instance used by the library.
      * @return A VL53L4CD configuration object.
      */
@@ -318,7 +357,7 @@ struct LidarArrayDebugConfig
 };
 
 /**
- * @brief Manages a group of VL53L0X or VL53L4CD sensors connected through PCF8574 XSHUT control.
+ * @brief Manages a group of VL53L0X and/or VL53L4CD sensors connected through PCF8574 XSHUT control.
  */
 class LidarArray
 {
@@ -435,7 +474,7 @@ public:
      * @param numSensors Number of active sensors.
      * @param pcf8574Addresses I2C addresses for the PCF8574 expanders.
      * @param sensorMap Sparse physical mapping for the active sensors.
-     * Each item uses {pcfIndex, pin, address, sensorId}.
+     * Each item uses {pcfIndex, pin, address, sensorId, model}.
      * @note This is the recommended API for non-dense layouts across multiple PCF8574 devices.
      */
     void setLayout(uint8_t numPCF, uint8_t numSensors, const uint8_t *pcf8574Addresses, const LidarSensorSlot *sensorMap);
@@ -596,13 +635,13 @@ public:
     /**
      * @brief Access a VL53L0X driver pointer by internal index.
      * @param sensorIndex Internal sensor index in the range 0..N-1.
-     * @return Pointer to the VL53L0X driver, or nullptr when this instance uses another model.
+     * @return Pointer to the VL53L0X driver, or nullptr when the slot uses another model.
      */
     VL53L0X *getVL53L0XSensor(uint8_t sensorIndex);
     /**
      * @brief Access a VL53L4CD driver pointer by internal index.
      * @param sensorIndex Internal sensor index in the range 0..N-1.
-     * @return Pointer to the VL53L4CD driver, or nullptr when this instance uses another model.
+     * @return Pointer to the VL53L4CD driver, or nullptr when the slot uses another model.
      */
     VL53L4CD *getVL53L4CDSensor(uint8_t sensorIndex);
 
@@ -676,11 +715,23 @@ public:
      */
     int16_t getSensorId(uint8_t sensorIndex) const;
     /**
+     * @brief Return the resolved sensor model associated with one internal index.
+     * @param sensorIndex Internal sensor index in the range 0..N-1.
+     * @return The resolved slot model, or InheritArrayDefault when the index is invalid.
+     */
+    LidarSensorModel getSensorModel(uint8_t sensorIndex) const;
+    /**
      * @brief Find the internal index associated with one public sensor ID.
      * @param sensorId Public logical sensor ID.
      * @return Internal sensor index, or -1 when the ID is not present.
      */
     int16_t indexOfSensorId(int16_t sensorId) const;
+    /**
+     * @brief Return the resolved sensor model associated with one public sensor ID.
+     * @param sensorId Public logical sensor ID.
+     * @return The resolved slot model, or InheritArrayDefault when the ID is not present.
+     */
+    LidarSensorModel getSensorModelById(int16_t sensorId) const;
     /**
      * @brief Return the sparse slot description associated with one internal index.
      * @param sensorIndex Internal sensor index in the range 0..N-1.
@@ -721,6 +772,8 @@ private:
     bool configValid_;
     bool explicitSensorMap_;
     uint8_t filterStorageCount_;
+    uint8_t vl53l0xSensorCount_;
+    uint8_t vl53l4cdSensorCount_;
 
     LidarSensorModel model_;
     TwoWire *wire_;
@@ -747,6 +800,7 @@ private:
 
     uint8_t *pcf8574Addresses_;
     uint8_t *pcf8574States_;
+    uint8_t *sensorDriverIndices_;
     LidarSensorSlot *sensorSlots_;
     bool *sensorReady_;
     LidarFilterConfig *sensorFilterConfigs_;
@@ -759,7 +813,7 @@ private:
     LidarArrayConfig config_;
 
     void resetMembers();
-    bool allocateStorage(uint8_t numPCF, uint8_t numSensors, LidarSensorModel model);
+    bool allocateStorage(uint8_t numPCF, uint8_t numSensors, uint8_t vl53l0xSensorCount, uint8_t vl53l4cdSensorCount);
     void releaseStorage();
     bool ensureFilterStorage(uint8_t numSensors);
     void releaseFilterStorage();

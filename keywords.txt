@@ -13,6 +13,7 @@ LidarFilterConfig  KEYWORD1
 LidarFilteredReading  KEYWORD1
 LidarSensorSlot  KEYWORD1
 LidarSensorModel  KEYWORD1
+LidarPcfPin  KEYWORD1
 LidarDebugLevel  KEYWORD1
 
 #######################################
@@ -64,6 +65,8 @@ getSensorCount              KEYWORD2
 getInitializedSensorCount   KEYWORD2
 isSensorReady               KEYWORD2
 getSensorId                 KEYWORD2
+getSensorModel              KEYWORD2
+getSensorModelById          KEYWORD2
 indexOfSensorId             KEYWORD2
 getSensorSlot               KEYWORD2
 scanI2C                     KEYWORD2
@@ -71,3 +74,16 @@ scanI2C                     KEYWORD2
 #######################################
 # Constants (LITERAL1)
 #######################################
+TOF_INHERIT_DEFAULT         LITERAL1
+TOF_VL53L0X                 LITERAL1
+TOF_VL53L4CD                LITERAL1
+pcf_p0                      LITERAL1
+pcf_p1                      LITERAL1
+pcf_p2                      LITERAL1
+pcf_p3                      LITERAL1
+pcf_p4                      LITERAL1
+pcf_p5                      LITERAL1
+pcf_p6                      LITERAL1
+pcf_p7                      LITERAL1
+LIDAR_SLOT                  LITERAL1
+LIDAR_SLOT_ADDR             LITERAL1

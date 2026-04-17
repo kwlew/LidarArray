@@ -7,6 +7,7 @@
 Current codebase includes:
 
 - support for `VL53L0X` and `VL53L4CD`
+- mixed-model sparse maps in a single `LidarArray`
 - preserved legacy dense `VL53L0X` flow
 - sparse physical mapping through `LidarSensorSlot`
 - public logical sensor IDs and ID-based reads
@@ -39,24 +40,25 @@ The root wrapper `lidarArray.h` is still available for backward compatibility.
 - sparse layout with `LidarSensorSlot`
 
 Use the dense layout when sensors follow the classic sequential mapping by PCF block. Use the sparse layout when sensors are spread across arbitrary `PCF8574` pins and you want explicit physical mapping.
+All shipped examples now use the sparse layout and the short `LIDAR_SLOT(...)` syntax. The dense layout remains supported for backward compatibility.
 
 ### LidarSensorSlot Cheat Sheet
 
 The sparse mapping API uses the following slot order:
 
 ```cpp
-{pcfIndex, pin, address, sensorId}
+{pcfIndex, pin, address, sensorId, model}
 ```
 
 Example:
 
 ```cpp
 const LidarSensorSlot sensorMap[] = {
-    {0, 3, 0, 0},
-    {0, 4, 0, 1},
-    {0, 7, 0, 2},
-    {1, 4, 0x36, 10},
-    {1, 6, 0, 11}
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p4, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(1, pcf_p5, TOF_VL53L0X, 12),
+    LIDAR_SLOT_ADDR(1, pcf_p7, 0x36, TOF_VL53L0X, 14),
+    {1, pcf_p6, 0, 11} // legacy 4-field form still works and inherits config.model
 };
 ```
 
@@ -66,6 +68,13 @@ Field meaning:
 - `pin`: physical `PCF8574` pin, always `0..7`
 - `address`: final sensor address, `0` for automatic assignment
 - `sensorId`: public logical ID, `-1` to reuse the internal index
+- `model`: slot model, or `TOF_INHERIT_DEFAULT` to reuse `config.model`
+
+Short syntax tokens:
+
+- `pcf_p0..pcf_p7`: short `PCF8574` pin names
+- `TOF_VL53L0X` and `TOF_VL53L4CD`: short model aliases
+- `LIDAR_SLOT(...)`: helper macro that omits the common automatic address `0`
 
 ### Internal Index vs Public ID vs Physical Position
 
@@ -124,22 +133,28 @@ void loop() {
 ```
 
 Use this path when you want the original dense `VL53L0X` flow and legacy `readSensor()` behavior.
+The shipped examples no longer use this style, but it remains fully supported.
 
-#### Current VL53L4CD Setup
+#### Recommended Current Setup
 
 ```cpp
 #include <LidarArray.h>
 
 const uint8_t pcf8574Addresses[] = {0x20};
-const uint8_t xshutPins[] = {0, 1, 2, 3, 4, 5, 6, 7};
+const LidarSensorSlot sensorMap[] = {
+    LIDAR_SLOT(0, pcf_p0, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p1, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p2, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 3)
+};
 
-LidarArray lidar(LidarSensorModel::VL53L4CD);
+LidarArray lidar(TOF_VL53L4CD);
 
 void setup() {
     Serial.begin(115200);
     Wire.begin();
 
-    lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    lidar.setLayout(1, 4, pcf8574Addresses, sensorMap);
     lidar.setTimeout(100);
     lidar.setVL53L4CDTiming(50, 0);
     lidar.begin();
@@ -152,28 +167,28 @@ Minimum required information:
 - number of `PCF8574` expanders
 - number of active sensors
 - `PCF8574` addresses
-- `xshutPins` or `sensorMap`
+- `sensorMap` for the recommended path, or `xshutPins` for the legacy dense path
 
 Everything else can stay at the defaults.
 
-#### Sparse Layout with Public IDs
+#### Sparse Layout with Mixed Models and Public IDs
 
 ```cpp
 #include <LidarArray.h>
 
 const uint8_t pcf8574Addresses[] = {0x20, 0x21};
 const LidarSensorSlot sensorMap[] = {
-    {0, 3, 0, 0},
-    {0, 4, 0, 1},
-    {0, 7, 0, 2},
-    {1, 0, 0, 10},
-    {1, 2, 0, 11},
-    {1, 4, 0, 12},
-    {1, 5, 0, 13},
-    {1, 7, 0, 14}
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p4, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p7, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(1, pcf_p0, TOF_VL53L0X, 10),
+    LIDAR_SLOT(1, pcf_p2, TOF_VL53L0X, 11),
+    LIDAR_SLOT(1, pcf_p4, TOF_VL53L0X, 12),
+    LIDAR_SLOT(1, pcf_p5, TOF_VL53L0X, 13),
+    LIDAR_SLOT(1, pcf_p7, TOF_VL53L0X, 14)
 };
 
-LidarArray lidar(LidarSensorModel::VL53L4CD);
+LidarArray lidar(LidarSensorModel::VL53L4CD); // default model for 4-field slots
 
 void setup() {
     Serial.begin(115200);
@@ -181,6 +196,7 @@ void setup() {
 
     lidar.setLayout(2, 8, pcf8574Addresses, sensorMap);
     lidar.setTimeout(100);
+    lidar.setMeasurementTimingBudget(20000);
     lidar.setVL53L4CDTiming(50, 0);
     lidar.begin();
 }
@@ -191,7 +207,7 @@ void loop() {
 }
 ```
 
-This is the recommended API for non-dense layouts and applications that need public sensor IDs.
+This is the recommended API for all new sketches, especially non-dense layouts, mixed sensor models, and applications that need public sensor IDs.
 
 ### Initialization Debug
 
@@ -274,19 +290,22 @@ Filtered APIs:
 
 ### Shipped Examples
 
-- `examples/basic`: basic legacy dense `VL53L0X` usage
-- `examples/usingTwoPCF`: dense layout across two `PCF8574` expanders
-- `examples/vl53l4cdConfig`: minimal current `VL53L4CD` setup
-- `examples/logicalRemap`: reorder logical indices without rewiring hardware
-- `examples/guidedDebug`: walk through boot, scans, and debug timing
-- `examples/addressOverview`: inspect automatic and manual final addresses
-- `examples/sparseSensorMap`: sparse mapping with `LidarSensorSlot` and public IDs
+- `examples/basic`: smallest recommended `sensorMap` setup for one `PCF8574`
+- `examples/usingTwoPCF`: sparse slot mapping across two `PCF8574` expanders
+- `examples/vl53l4cdConfig`: minimal `VL53L4CD` configuration with optional manual slot addresses
+- `examples/logicalRemap`: reorder logical indices by reordering the slot array
+- `examples/guidedDebug`: walk through boot, scans, and debug timing with sparse slots
+- `examples/addressOverview`: inspect automatic and manual final addresses per slot
+- `examples/sparseSensorMap`: sparse mapping with public IDs and 4-field compatibility
+- `examples/mixedSensorMap`: mix `VL53L0X` and `VL53L4CD` in one array
 
 ### Notes and Common Pitfalls
 
-- One `LidarArray` instance supports only one sensor model at a time.
+- All shipped examples use sparse `sensorMap` layouts. The dense `xshutPins` path remains supported, but it is now a compatibility path rather than the recommended style.
+- One `LidarArray` instance can mix `VL53L0X` and `VL53L4CD` when `sensorMap` defines the model per slot.
 - Sensors above `numSensors` remain in shutdown.
-- `getSensor()` is only for `VL53L0X` compatibility.
+- `config.model` is now the array default model used by legacy layouts and by 4-field sparse slots.
+- `getSensor()` is only for `VL53L0X` compatibility and only makes sense for `VL53L0X` slots.
 - `readSensor()` and `readSensorNB()` may apply legacy fallback and clamp behavior when legacy mode is active.
 - Filtered reads are optional and do not change the raw behavior of `readSensor()`, `readSensorNB()`, or `readReading()`.
 - `Vector.h` remains in the repository, but the library no longer depends on it internally.
@@ -298,7 +317,8 @@ Filtered APIs:
 
 #### Public Types
 
-- `LidarSensorModel`: selects `VL53L0X` or `VL53L4CD`
+- `LidarSensorModel`: selects the array default model or a slot model override
+- `LidarPcfPin`: short `PCF8574` pin tokens for sparse maps
 - `LidarDebugLevel`: selects the debug verbosity
 - `LidarSensorSlot`: sparse physical slot description
 - `LidarReading`: structured measurement result
@@ -400,6 +420,8 @@ Filtered APIs:
 - `getInitializedSensorCount()`
 - `isSensorReady(index)`
 - `getSensorId(index)`
+- `getSensorModel(index)`
+- `getSensorModelById(sensorId)`
 - `indexOfSensorId(sensorId)`
 - `getSensorSlot(index)`
 
@@ -412,6 +434,7 @@ Filtered APIs:
 O codigo atual inclui:
 
 - suporte a `VL53L0X` e `VL53L4CD`
+- mapeamento esparso misto com os dois modelos na mesma instancia
 - preservacao do fluxo legado denso para `VL53L0X`
 - mapeamento fisico esparso com `LidarSensorSlot`
 - IDs logicos publicos e leituras por ID
@@ -444,24 +467,25 @@ O wrapper raiz `lidarArray.h` continua disponivel por compatibilidade.
 - layout esparso com `LidarSensorSlot`
 
 Use o layout denso quando os sensores seguem o mapeamento sequencial classico por bloco de PCF. Use o layout esparso quando os sensores estiverem distribuidos em pinos arbitrarios de um ou mais `PCF8574` e voce quiser declarar o mapeamento fisico explicitamente.
+Todos os exemplos publicos agora usam o layout esparso com a sintaxe curta `LIDAR_SLOT(...)`. O layout denso continua suportado apenas como compatibilidade.
 
 ### Cola do LidarSensorSlot
 
 A API de mapeamento esparso usa a seguinte ordem de campos:
 
 ```cpp
-{pcfIndex, pin, address, sensorId}
+{pcfIndex, pin, address, sensorId, model}
 ```
 
 Exemplo:
 
 ```cpp
 const LidarSensorSlot sensorMap[] = {
-    {0, 3, 0, 0},
-    {0, 4, 0, 1},
-    {0, 7, 0, 2},
-    {1, 4, 0x36, 10},
-    {1, 6, 0, 11}
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p4, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(1, pcf_p5, TOF_VL53L0X, 12),
+    LIDAR_SLOT_ADDR(1, pcf_p7, 0x36, TOF_VL53L0X, 14),
+    {1, pcf_p6, 0, 11}
 };
 ```
 
@@ -471,6 +495,13 @@ Significado dos campos:
 - `pin`: pino fisico do `PCF8574`, sempre `0..7`
 - `address`: endereco final do sensor, `0` para modo automatico
 - `sensorId`: ID logico publico, `-1` para reaproveitar o indice interno
+- `model`: modelo do slot, ou `TOF_INHERIT_DEFAULT` para herdar `config.model`
+
+Atalhos recomendados:
+
+- `pcf_p0..pcf_p7`: nomes curtos para os pinos do `PCF8574`
+- `TOF_VL53L0X` e `TOF_VL53L4CD`: aliases curtos dos modelos
+- `LIDAR_SLOT(...)`: macro para omitir o endereco automatico `0`
 
 ### Indice Interno vs sensorId vs Posicao Fisica
 
@@ -529,22 +560,28 @@ void loop() {
 ```
 
 Use esse caminho quando quiser o fluxo denso original de `VL53L0X` e o comportamento legado de `readSensor()`.
+Os exemplos publicos nao usam mais esse estilo, mas ele continua totalmente suportado.
 
-#### Configuracao Atual com VL53L4CD
+#### Configuracao Recomendada Atual
 
 ```cpp
 #include <LidarArray.h>
 
 const uint8_t pcf8574Addresses[] = {0x20};
-const uint8_t xshutPins[] = {0, 1, 2, 3, 4, 5, 6, 7};
+const LidarSensorSlot sensorMap[] = {
+    LIDAR_SLOT(0, pcf_p0, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p1, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p2, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 3)
+};
 
-LidarArray lidar(LidarSensorModel::VL53L4CD);
+LidarArray lidar(TOF_VL53L4CD);
 
 void setup() {
     Serial.begin(115200);
     Wire.begin();
 
-    lidar.setLayout(1, 4, pcf8574Addresses, xshutPins);
+    lidar.setLayout(1, 4, pcf8574Addresses, sensorMap);
     lidar.setTimeout(100);
     lidar.setVL53L4CDTiming(50, 0);
     lidar.begin();
@@ -557,25 +594,25 @@ Informacoes minimas necessarias:
 - quantidade de `PCF8574`
 - quantidade de sensores ativos
 - enderecos dos `PCF8574`
-- `xshutPins` ou `sensorMap`
+- `sensorMap` no caminho recomendado, ou `xshutPins` no caminho denso legado
 
 Todo o resto pode ficar nos defaults.
 
-#### Layout Esparso com IDs Publicos
+#### Layout Esparso Misto com IDs Publicos
 
 ```cpp
 #include <LidarArray.h>
 
 const uint8_t pcf8574Addresses[] = {0x20, 0x21};
 const LidarSensorSlot sensorMap[] = {
-    {0, 3, 0, 0},
-    {0, 4, 0, 1},
-    {0, 7, 0, 2},
-    {1, 0, 0, 10},
-    {1, 2, 0, 11},
-    {1, 4, 0, 12},
-    {1, 5, 0, 13},
-    {1, 7, 0, 14}
+    LIDAR_SLOT(0, pcf_p3, TOF_VL53L4CD, 0),
+    LIDAR_SLOT(0, pcf_p4, TOF_VL53L4CD, 1),
+    LIDAR_SLOT(0, pcf_p7, TOF_VL53L4CD, 2),
+    LIDAR_SLOT(1, pcf_p0, TOF_VL53L0X, 10),
+    LIDAR_SLOT(1, pcf_p2, TOF_VL53L0X, 11),
+    LIDAR_SLOT(1, pcf_p4, TOF_VL53L0X, 12),
+    LIDAR_SLOT(1, pcf_p5, TOF_VL53L0X, 13),
+    LIDAR_SLOT(1, pcf_p7, TOF_VL53L0X, 14)
 };
 
 LidarArray lidar(LidarSensorModel::VL53L4CD);
@@ -586,6 +623,7 @@ void setup() {
 
     lidar.setLayout(2, 8, pcf8574Addresses, sensorMap);
     lidar.setTimeout(100);
+    lidar.setMeasurementTimingBudget(20000);
     lidar.setVL53L4CDTiming(50, 0);
     lidar.begin();
 }
@@ -596,7 +634,7 @@ void loop() {
 }
 ```
 
-Essa e a API recomendada para layouts nao densos e para aplicacoes que precisam de IDs publicos.
+Essa e a API recomendada para todos os sketches novos, especialmente layouts nao densos, mistura de modelos e aplicacoes que precisam de IDs publicos.
 
 ### Debug da Inicializacao
 
@@ -679,19 +717,22 @@ APIs filtradas:
 
 ### Exemplos Publicos
 
-- `examples/basic`: uso basico do fluxo legado denso de `VL53L0X`
-- `examples/usingTwoPCF`: layout denso em dois expansores `PCF8574`
-- `examples/vl53l4cdConfig`: configuracao minima atual para `VL53L4CD`
-- `examples/logicalRemap`: remapeio da ordem logica sem refazer os cabos
-- `examples/guidedDebug`: boot guiado com scans e tempos de debug
-- `examples/addressOverview`: inspecao de enderecos finais automaticos e manuais
-- `examples/sparseSensorMap`: mapeamento esparso com `LidarSensorSlot` e IDs publicos
+- `examples/basic`: menor setup recomendado com `sensorMap` e um `PCF8574`
+- `examples/usingTwoPCF`: mapeamento esparso em dois expansores `PCF8574`
+- `examples/vl53l4cdConfig`: configuracao minima de `VL53L4CD` com enderecos opcionais por slot
+- `examples/logicalRemap`: remapeio da ordem logica reordenando o array de slots
+- `examples/guidedDebug`: boot guiado com scans e tempos de debug em slots esparsos
+- `examples/addressOverview`: inspecao de enderecos finais automaticos e manuais por slot
+- `examples/sparseSensorMap`: mapeamento esparso com IDs publicos e compatibilidade de 4 campos
+- `examples/mixedSensorMap`: mistura `VL53L0X` e `VL53L4CD` no mesmo array
 
 ### Observacoes e Armadilhas Comuns
 
-- Uma instancia de `LidarArray` suporta apenas um modelo de sensor por vez.
+- Todos os exemplos publicos usam `sensorMap`. O caminho denso com `xshutPins` continua suportado, mas agora fica como trilha de compatibilidade, nao como estilo recomendado.
+- Uma instancia de `LidarArray` pode misturar `VL53L0X` e `VL53L4CD` quando o `sensorMap` define o modelo por slot.
 - Sensores acima de `numSensors` permanecem em shutdown.
-- `getSensor()` existe apenas para compatibilidade com `VL53L0X`.
+- `config.model` agora e o modelo padrao do array para layouts legados e slots esparsos com 4 campos.
+- `getSensor()` existe apenas para compatibilidade com `VL53L0X` e so faz sentido em slots `VL53L0X`.
 - `readSensor()` e `readSensorNB()` podem aplicar fallback e clamp quando o modo legado estiver ativo.
 - As leituras filtradas sao opcionais e nao alteram o comportamento cru de `readSensor()`, `readSensorNB()` ou `readReading()`.
 - `Vector.h` continua no repositorio, mas a biblioteca nao depende mais dele internamente.
@@ -703,7 +744,8 @@ APIs filtradas:
 
 #### Tipos Publicos
 
-- `LidarSensorModel`: seleciona `VL53L0X` ou `VL53L4CD`
+- `LidarSensorModel`: seleciona o modelo padrao do array ou o override de um slot
+- `LidarPcfPin`: tokens curtos para pinos do `PCF8574`
 - `LidarDebugLevel`: seleciona a verbosidade do debug
 - `LidarSensorSlot`: descricao de um slot fisico esparso
 - `LidarReading`: resultado estruturado de leitura
@@ -805,6 +847,8 @@ APIs filtradas:
 - `getInitializedSensorCount()`
 - `isSensorReady(index)`
 - `getSensorId(index)`
+- `getSensorModel(index)`
+- `getSensorModelById(sensorId)`
 - `indexOfSensorId(sensorId)`
 - `getSensorSlot(index)`
 
