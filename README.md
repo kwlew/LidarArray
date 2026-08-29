@@ -319,7 +319,6 @@ Filtered APIs:
 - `readSensor()` and `readSensorNB()` may apply legacy fallback and clamp behavior when legacy mode is active.
 - Filtered reads are optional and do not change the raw behavior of `readSensor()`, `readSensorNB()`, or `readReading()`.
 - `timeoutMs` defaults to `100` for both models. A value of `0` would make the underlying driver block forever on an unresponsive sensor, so the library replaces `0` with a timeout derived from the configured measurement period, bounded to `100..1000` ms.
-- `Vector.h` remains in the repository, but the library no longer depends on it internally.
 - Seeing `0x29` before initialization is normal if a ToF sensor is already awake.
 - `status = 254` indicates a library-side not-ready or unavailable condition.
 - Partial initialization does not prevent ready sensors from being used.
@@ -757,7 +756,6 @@ APIs filtradas:
 - `readSensor()` e `readSensorNB()` podem aplicar fallback e clamp quando o modo legado estiver ativo.
 - As leituras filtradas sao opcionais e nao alteram o comportamento cru de `readSensor()`, `readSensorNB()` ou `readReading()`.
 - `timeoutMs` agora vale `100` por padrao nos dois modelos. O valor `0` faria o driver bloquear para sempre em um sensor que nao responde, entao a biblioteca troca `0` por um timeout derivado do periodo de medicao configurado, limitado a `100..1000` ms.
-- `Vector.h` continua no repositorio, mas a biblioteca nao depende mais dele internamente.
 - Ver `0x29` antes da inicializacao e normal se um ToF ja estiver acordado.
 - `status = 254` indica um estado interno de nao pronto ou indisponivel.
 - Inicializacao parcial nao impede o uso dos sensores que ficaram prontos.
