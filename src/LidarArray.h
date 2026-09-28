@@ -67,6 +67,14 @@ enum class LidarDebugLevel : uint8_t
     Verbose
 };
 
+// C++11 (the Arduino AVR default) does not treat a struct with default member
+// initializers as an aggregate, which would break brace-initialized slot maps.
+#if __cplusplus >= 201402L
+#define LIDAR_SLOT_DEFAULT(value) = value
+#else
+#define LIDAR_SLOT_DEFAULT(value)
+#endif
+
 /**
  * @brief Describes the physical and logical placement of one sensor.
  * @note Slot literal order is {pcfIndex, pin, address, sensorId, model}.
@@ -77,20 +85,25 @@ enum class LidarDebugLevel : uint8_t
  *     {1, pcf_p5, 0, 11} // legacy 4-field form still works and inherits config.model
  * };
  * @endcode
+ * @note When compiled as C++11, omitted trailing fields are zero-filled, so a slot that
+ * leaves out sensorId gets ID 0 instead of -1. LIDAR_SLOT(...) always sets every field.
  */
 struct LidarSensorSlot
 {
     /// Index of the PCF8574 that controls this sensor XSHUT line.
-    uint8_t pcfIndex = 0;
+    uint8_t pcfIndex LIDAR_SLOT_DEFAULT(0);
     /// Physical PCF8574 pin connected to XSHUT, always in the range 0..7.
-    uint8_t pin = 0;
+    uint8_t pin LIDAR_SLOT_DEFAULT(0);
     /// Final I2C address to assign after boot. Use 0 for automatic addressing.
-    uint8_t address = 0;
+    /// Automatic addresses start at 0x30 and skip PCF8574, 0x29, and manual slot addresses.
+    uint8_t address LIDAR_SLOT_DEFAULT(0);
     /// Public logical ID exposed by the library. Use -1 to reuse the internal index.
-    int16_t sensorId = -1;
+    int16_t sensorId LIDAR_SLOT_DEFAULT(-1);
     /// Sensor model used by this slot. Use InheritArrayDefault to reuse LidarArrayConfig::model.
-    LidarSensorModel model = LidarSensorModel::InheritArrayDefault;
+    LidarSensorModel model LIDAR_SLOT_DEFAULT(LidarSensorModel::InheritArrayDefault);
 };
+
+#undef LIDAR_SLOT_DEFAULT
 
 /**
  * @brief Detailed result returned by the structured reading API.
@@ -100,6 +113,8 @@ struct LidarReading
     /// Measured distance in millimeters.
     uint16_t distanceMm = 0;
     /// Raw sensor status or a library-defined availability status.
+    /// Raw codes are model-specific: VL53L4CD uses 0 for a good range, while VL53L0X reports
+    /// its device range status, where 11 means a good range. Use valid for model-independent code.
     uint8_t status = 0xFF;
     /// True when the reading can be used as a valid measurement.
     bool valid = false;
@@ -663,8 +678,9 @@ public:
     void setMeasurementTimingBudget(uint32_t timingBudget);
     /**
      * @brief Update a VL53L0X VCSEL period for ready sensors and future initialization.
-     * @param type Use 0 for pre-range and 1 for final-range.
+     * @param type Use 0 for pre-range and 1 for final-range. Other values are ignored.
      * @param period VCSEL period value accepted by the driver.
+     * @note Running sensors briefly stop and restart continuous ranging to apply the change.
      */
     void setVcselPulsePeriod(uint8_t type, uint8_t period);
     /**
@@ -764,6 +780,8 @@ private:
     static constexpr uint8_t kLibraryStatusInvalidIndex = 0xFD;
     static constexpr uint8_t kLibraryStatusNotReady = 0xFE;
     static constexpr uint8_t kLibraryStatusTimeout = 0xFF;
+    /// VL53L0X device range status for a good measurement (ST API "range complete").
+    static constexpr uint8_t kVl53l0xDeviceStatusRangeComplete = 11;
     static constexpr uint16_t kMinimumAutoTimeoutMs = 100;
     static constexpr uint16_t kMaximumAutoTimeoutMs = 1000;
 
@@ -776,6 +794,8 @@ private:
         bool hasLastFilteredValue = false;
         uint8_t heldReads = 0;
         uint8_t rejectedReads = 0;
+        uint16_t lastOutputMm = 0;
+        bool lastOutputValid = false;
     };
 
     uint8_t numPCF_;
@@ -834,6 +854,7 @@ private:
     void copyConfig(const LidarArrayConfig &config);
     bool copyLegacyLayout(const LidarArrayConfig &config);
     bool copySparseLayout(const LidarArrayConfig &config);
+    uint8_t allocateAutoAddress(uint8_t &nextCandidate, const LidarSensorSlot *sensorMap) const;
     bool syncConfiguration();
     bool validateConfiguration() const;
 
@@ -864,6 +885,11 @@ private:
     void appendValidFilterSample(uint8_t sensorIndex, uint16_t sample);
     uint16_t applyEma(uint16_t previousValue, uint16_t sample, uint8_t alphaPercent) const;
     LidarFilteredReading applyFilterPipeline(uint8_t sensorIndex, const LidarReading &raw);
+    void filterNewSample(
+        uint8_t sensorIndex,
+        const LidarFilterConfig &config,
+        const LidarReading &raw,
+        LidarFilteredReading &filtered);
 
     void logMessage(LidarDebugLevel level, const __FlashStringHelper *message) const;
     void logScanResult(uint8_t address, uint8_t errorCode) const;

@@ -91,7 +91,7 @@ This means you can keep a compact internal array while exposing sensor names tha
 Default behavior:
 
 - sensor boot address: `0x29`
-- final address: `0x30 + internal index`
+- final address: `0x30 + internal index`, skipping any address already used by a `PCF8574`, `0x29`, or a manual slot address
 
 Manual addressing is also supported:
 
@@ -318,9 +318,10 @@ Filtered APIs:
 - `getSensor()` is only for `VL53L0X` compatibility and only makes sense for `VL53L0X` slots.
 - `readSensor()` and `readSensorNB()` may apply legacy fallback and clamp behavior when legacy mode is active.
 - Filtered reads are optional and do not change the raw behavior of `readSensor()`, `readSensorNB()`, or `readReading()`.
-- `timeoutMs` defaults to `100` for both models. A value of `0` would make the underlying driver block forever on an unresponsive sensor, so the library replaces `0` with a timeout derived from the configured measurement period, bounded to `100..1000` ms.
+- `timeoutMs` defaults to `100` for both models. A value of `0` would make the underlying driver block forever on an unresponsive sensor, so the library replaces `0` with a timeout derived from the configured measurement period (including the VL53L4CD inter-measurement period), bounded to `100..1000` ms but never below one full measurement period.
 - Seeing `0x29` before initialization is normal if a ToF sensor is already awake.
 - `status = 254` indicates a library-side not-ready or unavailable condition.
+- Raw `status` codes are model-specific: `VL53L4CD` uses `0` for a good range, `VL53L0X` reports its device range status where `11` means a good range. Use `valid` for model-independent checks.
 - Partial initialization does not prevent ready sensors from being used.
 
 ### Public API Reference
@@ -528,7 +529,7 @@ Assim, a biblioteca pode manter arrays internos compactos enquanto voce expoe no
 Comportamento padrao:
 
 - endereco de boot do sensor: `0x29`
-- endereco final: `0x30 + indice interno`
+- endereco final: `0x30 + indice interno`, pulando enderecos ja usados por um `PCF8574`, por `0x29` ou por um endereco manual de slot
 
 Tambem existe enderecamento manual:
 
@@ -755,9 +756,10 @@ APIs filtradas:
 - `getSensor()` existe apenas para compatibilidade com `VL53L0X` e so faz sentido em slots `VL53L0X`.
 - `readSensor()` e `readSensorNB()` podem aplicar fallback e clamp quando o modo legado estiver ativo.
 - As leituras filtradas sao opcionais e nao alteram o comportamento cru de `readSensor()`, `readSensorNB()` ou `readReading()`.
-- `timeoutMs` agora vale `100` por padrao nos dois modelos. O valor `0` faria o driver bloquear para sempre em um sensor que nao responde, entao a biblioteca troca `0` por um timeout derivado do periodo de medicao configurado, limitado a `100..1000` ms.
+- `timeoutMs` agora vale `100` por padrao nos dois modelos. O valor `0` faria o driver bloquear para sempre em um sensor que nao responde, entao a biblioteca troca `0` por um timeout derivado do periodo de medicao configurado (incluindo o periodo entre medicoes do VL53L4CD), limitado a `100..1000` ms mas nunca abaixo de um periodo completo de medicao.
 - Ver `0x29` antes da inicializacao e normal se um ToF ja estiver acordado.
 - `status = 254` indica um estado interno de nao pronto ou indisponivel.
+- Os codigos brutos de `status` dependem do modelo: `VL53L4CD` usa `0` para leitura boa, `VL53L0X` informa o status de range do dispositivo, onde `11` significa leitura boa. Use `valid` para codigo independente de modelo.
 - Inicializacao parcial nao impede o uso dos sensores que ficaram prontos.
 
 ### Referencia da API Publica

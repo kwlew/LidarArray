@@ -427,43 +427,23 @@ void LidarArray::releaseFilterStorage()
 
 bool LidarArray::copyLegacyLayout(const LidarArrayConfig &config)
 {
-    if (config.xshutPins == nullptr)
+    if (config.xshutPins == nullptr || !isConcreteModel(config.model))
     {
         return false;
     }
 
-    for (uint8_t pcfIndex = 0; pcfIndex < numPCF_; ++pcfIndex)
-    {
-        uint8_t pinMask = 0;
-        for (uint8_t slot = 0; slot < kSlotsPerPcf; ++slot)
-        {
-            const uint8_t index = static_cast<uint8_t>((pcfIndex * kSlotsPerPcf) + slot);
-            const uint8_t pin = config.xshutPins[index];
-            if (pin >= kSlotsPerPcf)
-            {
-                return false;
-            }
-            if ((pinMask & (1 << pin)) != 0)
-            {
-                return false;
-            }
-            pinMask |= (1 << pin);
-        }
-    }
-
-    if (!isConcreteModel(config.model))
-    {
-        return false;
-    }
-
+    // Only the first numSensors entries are read: the pointer-based setLayout()/forModel()
+    // APIs accept arrays shorter than numPCF * 8. Pin range and duplicate (PCF, pin) pairs
+    // are checked by validateConfiguration().
     uint8_t driverIndex = 0;
+    uint8_t nextAutoAddress = kDefaultAddressBase;
     for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
     {
         sensorSlots_[sensorIndex].pcfIndex = sensorIndex / kSlotsPerPcf;
         sensorSlots_[sensorIndex].pin = config.xshutPins[sensorIndex];
         sensorSlots_[sensorIndex].address = config.sensorAddresses != nullptr
             ? config.sensorAddresses[sensorIndex]
-            : static_cast<uint8_t>(kDefaultAddressBase + sensorIndex);
+            : allocateAutoAddress(nextAutoAddress, nullptr);
         sensorSlots_[sensorIndex].sensorId = sensorIndex;
         sensorSlots_[sensorIndex].model = config.model;
         sensorDriverIndices_[sensorIndex] = driverIndex++;
@@ -482,6 +462,7 @@ bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
 
     uint8_t vl53l0xIndex = 0;
     uint8_t vl53l4cdIndex = 0;
+    uint8_t nextAutoAddress = kDefaultAddressBase;
 
     for (uint8_t sensorIndex = 0; sensorIndex < sensorCount_; ++sensorIndex)
     {
@@ -490,7 +471,7 @@ bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
 
         if (sensorSlots_[sensorIndex].address == 0)
         {
-            sensorSlots_[sensorIndex].address = static_cast<uint8_t>(kDefaultAddressBase + sensorIndex);
+            sensorSlots_[sensorIndex].address = allocateAutoAddress(nextAutoAddress, config.sensorMap);
         }
 
         if (sensorSlots_[sensorIndex].sensorId < 0)
@@ -515,6 +496,36 @@ bool LidarArray::copySparseLayout(const LidarArrayConfig &config)
     }
 
     return true;
+}
+
+uint8_t LidarArray::allocateAutoAddress(uint8_t &nextCandidate, const LidarSensorSlot *sensorMap) const
+{
+    // Hand out 0x30, 0x31, ... in slot order, skipping addresses that are already taken by
+    // a PCF8574 (PCF8574A parts live at 0x38..0x3F), the ToF boot address, or a manual
+    // slot address. Without collisions this is identical to kDefaultAddressBase + index.
+    while (nextCandidate <= 0x77)
+    {
+        const uint8_t candidate = nextCandidate++;
+        bool taken = candidate == kTofDefaultAddress;
+
+        for (uint8_t pcfIndex = 0; !taken && pcfIndex < numPCF_; ++pcfIndex)
+        {
+            taken = pcf8574Addresses_[pcfIndex] == candidate;
+        }
+
+        for (uint8_t sensorIndex = 0; !taken && sensorMap != nullptr && sensorIndex < sensorCount_; ++sensorIndex)
+        {
+            taken = sensorMap[sensorIndex].address == candidate;
+        }
+
+        if (!taken)
+        {
+            return candidate;
+        }
+    }
+
+    // Address space exhausted; validateConfiguration() rejects address 0.
+    return 0;
 }
 
 void LidarArray::copyConfig(const LidarArrayConfig &config)
@@ -897,10 +908,14 @@ void LidarArray::setVL53L4CDTiming(uint8_t timingBudgetMs, uint32_t interMeasure
             continue;
         }
 
+        // startContinuous() picks continuous vs. autonomous mode from the inter-measurement
+        // setting, so ranging must be restarted for a changed period to take effect.
+        sensor->stopContinuous();
         if (!sensor->setRangeTiming(vl53l4cdTimingBudgetMs_, vl53l4cdInterMeasurementMs_))
         {
             logSensorStep(i, F("failed to update VL53L4CD timing"), LidarDebugLevel::Errors);
         }
+        sensor->startContinuous();
     }
 }
 
@@ -1191,15 +1206,22 @@ void LidarArray::setMeasurementTimingBudget(uint32_t timingBudget)
             continue;
         }
 
+        sensor->stopContinuous();
         if (!sensor->setMeasurementTimingBudget(vl53l0xMeasurementTimingBudgetUs_))
         {
             logSensorStep(i, F("failed to update timing budget"), LidarDebugLevel::Errors);
         }
+        sensor->startContinuous();
     }
 }
 
 void LidarArray::setVcselPulsePeriod(uint8_t type, uint8_t period)
 {
+    if (type > 1)
+    {
+        return;
+    }
+
     if (type == 0)
     {
         config_.vl53l0xPreRangeVcselPeriod = period;
@@ -1221,15 +1243,13 @@ void LidarArray::setVcselPulsePeriod(uint8_t type, uint8_t period)
             continue;
         }
 
-        bool applied = false;
-        if (type == 0)
-        {
-            applied = sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, period);
-        }
-        else if (type == 1)
-        {
-            applied = sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, period);
-        }
+        // The driver's phase calibration writes SYSRANGE_START = 0 and leaves the sensor idle,
+        // so continuous ranging has to be restarted afterwards or every read would time out.
+        sensor->stopContinuous();
+        const bool applied = sensor->setVcselPulsePeriod(
+            type == 0 ? VL53L0X::VcselPeriodPreRange : VL53L0X::VcselPeriodFinalRange,
+            period);
+        sensor->startContinuous();
 
         if (!applied)
         {
@@ -1475,9 +1495,16 @@ uint16_t LidarArray::resolveEffectiveTimeoutMs() const
     {
         measurementPeriodMs = vl53l0xMeasurementTimingBudgetUs_ / 1000UL;
     }
-    if (vl53l4cdSensorCount_ > 0 && vl53l4cdTimingBudgetMs_ > measurementPeriodMs)
+    if (vl53l4cdSensorCount_ > 0)
     {
-        measurementPeriodMs = vl53l4cdTimingBudgetMs_;
+        // In autonomous mode a new result only arrives once per inter-measurement period.
+        const uint32_t vl53l4cdPeriodMs = vl53l4cdInterMeasurementMs_ > vl53l4cdTimingBudgetMs_
+            ? vl53l4cdInterMeasurementMs_
+            : vl53l4cdTimingBudgetMs_;
+        if (vl53l4cdPeriodMs > measurementPeriodMs)
+        {
+            measurementPeriodMs = vl53l4cdPeriodMs;
+        }
     }
 
     const uint32_t derivedTimeoutMs = (measurementPeriodMs * 2UL) + 50UL;
@@ -1485,9 +1512,20 @@ uint16_t LidarArray::resolveEffectiveTimeoutMs() const
     {
         return kMinimumAutoTimeoutMs;
     }
-    if (derivedTimeoutMs > kMaximumAutoTimeoutMs)
+
+    // Never cap below one full measurement period, or blocking reads could never succeed.
+    uint32_t maximumTimeoutMs = measurementPeriodMs + 50UL;
+    if (maximumTimeoutMs < kMaximumAutoTimeoutMs)
     {
-        return kMaximumAutoTimeoutMs;
+        maximumTimeoutMs = kMaximumAutoTimeoutMs;
+    }
+    if (maximumTimeoutMs > 0xFFFFUL)
+    {
+        maximumTimeoutMs = 0xFFFFUL;
+    }
+    if (derivedTimeoutMs > maximumTimeoutMs)
+    {
+        return static_cast<uint16_t>(maximumTimeoutMs);
     }
 
     return static_cast<uint16_t>(derivedTimeoutMs);
@@ -1504,6 +1542,9 @@ bool LidarArray::initializeVL53L0X(uint8_t sensorIndex, uint8_t address)
     const uint16_t effectiveTimeoutMs = resolveEffectiveTimeoutMs();
 
     VL53L0X &sensor = *sensorPointer;
+    // XSHUT reset the device to 0x29, but a driver object left over from an earlier
+    // begin() still targets the address it assigned last time. Start from a fresh driver.
+    sensor = VL53L0X();
     sensor.setBus(wire_);
     sensor.setTimeout(effectiveTimeoutMs);
 
@@ -1547,6 +1588,8 @@ bool LidarArray::initializeVL53L4CD(uint8_t sensorIndex, uint8_t address)
     const uint16_t effectiveTimeoutMs = resolveEffectiveTimeoutMs();
 
     VL53L4CD &sensor = *sensorPointer;
+    // See initializeVL53L0X(): the device is back at 0x29 after XSHUT, the driver may not be.
+    sensor = VL53L4CD();
     sensor.setBus(wire_);
     sensor.setTimeout(effectiveTimeoutMs);
 
@@ -1800,6 +1843,36 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
 
     SensorFilterState &state = filterStates_[sensorIndex];
 
+    // A non-blocking poll on a healthy sensor that simply has no new sample yet is not a bad
+    // measurement. Report the current estimate without spending the hold budget, otherwise
+    // polling faster than the measurement rate would invalidate the output after a few calls.
+    const bool noNewSample = !raw.dataReady &&
+        !raw.timeout &&
+        raw.status == kLibraryStatusNotReady &&
+        sensorIndex < sensorCount_ &&
+        sensorReady_[sensorIndex];
+    if (noNewSample)
+    {
+        filtered.distanceMm = state.lastOutputMm;
+        filtered.valid = state.lastOutputValid;
+        filtered.heldLastValid = state.lastOutputValid;
+        return filtered;
+    }
+
+    filterNewSample(sensorIndex, config, raw, filtered);
+    state.lastOutputMm = filtered.distanceMm;
+    state.lastOutputValid = filtered.valid;
+    return filtered;
+}
+
+void LidarArray::filterNewSample(
+    uint8_t sensorIndex,
+    const LidarFilterConfig &config,
+    const LidarReading &raw,
+    LidarFilteredReading &filtered)
+{
+    SensorFilterState &state = filterStates_[sensorIndex];
+
     if (!raw.valid || raw.timeout)
     {
         if (config.holdLastValid &&
@@ -1810,12 +1883,12 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
             filtered.valid = true;
             filtered.heldLastValid = true;
             ++state.heldReads;
-            return filtered;
+            return;
         }
 
         filtered.distanceMm = 0;
         filtered.valid = false;
-        return filtered;
+        return;
     }
 
     const uint16_t medianCandidate = computeMedianCandidate(sensorIndex, raw.distanceMm, config.medianWindow);
@@ -1837,7 +1910,7 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
                 filtered.distanceMm = raw.distanceMm;
                 filtered.valid = true;
                 filtered.jumpResynced = true;
-                return filtered;
+                return;
             }
 
             ++state.rejectedReads;
@@ -1850,12 +1923,12 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
                 filtered.valid = true;
                 filtered.heldLastValid = true;
                 ++state.heldReads;
-                return filtered;
+                return;
             }
 
             filtered.distanceMm = 0;
             filtered.valid = false;
-            return filtered;
+            return;
         }
     }
 
@@ -1877,7 +1950,6 @@ LidarFilteredReading LidarArray::applyFilterPipeline(uint8_t sensorIndex, const 
 
     filtered.distanceMm = finalValue;
     filtered.valid = true;
-    return filtered;
 }
 
 LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)
@@ -1894,36 +1966,36 @@ LidarReading LidarArray::readVL53L0X(uint8_t sensorIndex, bool blocking)
     reading.sensorId = sensorSlots_[sensorIndex].sensorId;
     reading.model = sensorSlots_[sensorIndex].model;
 
-    if (!blocking)
+    // Poll the data-ready flag ourselves instead of calling readRangeContinuousMillimeters(),
+    // so the status byte and the range are captured from the same measurement before the
+    // interrupt is cleared and the device starts overwriting the result registers.
+    const uint16_t timeoutMs = sensor.getTimeout();
+    const unsigned long startMs = millis();
+    while ((sensor.readReg(VL53L0X::RESULT_INTERRUPT_STATUS) & 0x07) == 0)
     {
-        const uint8_t interruptStatus = sensor.readReg(VL53L0X::RESULT_INTERRUPT_STATUS);
-        if ((interruptStatus & 0x07) == 0)
+        if (!blocking)
         {
             reading.status = kLibraryStatusNotReady;
             return reading;
         }
 
-        const uint8_t rangeStatus = sensor.readReg(VL53L0X::RESULT_RANGE_STATUS);
-        reading.distanceMm = sensor.readReg16Bit(VL53L0X::RESULT_RANGE_STATUS + 10);
-        sensor.writeReg(VL53L0X::SYSTEM_INTERRUPT_CLEAR, 0x01);
-        reading.status = (rangeStatus & 0x78) >> 3;
-        reading.dataReady = true;
-        reading.valid = reading.status == 0 && reading.distanceMm > 0;
-        return reading;
+        if (timeoutMs > 0 && (millis() - startMs) > timeoutMs)
+        {
+            reading.timeout = true;
+            reading.status = kLibraryStatusTimeout;
+            return reading;
+        }
     }
 
-    reading.distanceMm = sensor.readRangeContinuousMillimeters();
-    reading.timeout = sensor.timeoutOccurred();
-    if (reading.timeout)
-    {
-        reading.distanceMm = 0;
-        reading.status = kLibraryStatusTimeout;
-        return reading;
-    }
+    // One burst read covers RESULT_RANGE_STATUS (0x14) through the range bytes (0x1E..0x1F).
+    uint8_t result[12];
+    sensor.readMulti(VL53L0X::RESULT_RANGE_STATUS, result, sizeof(result));
+    sensor.writeReg(VL53L0X::SYSTEM_INTERRUPT_CLEAR, 0x01);
 
-    reading.status = (sensor.readReg(VL53L0X::RESULT_RANGE_STATUS) & 0x78) >> 3;
+    reading.distanceMm = static_cast<uint16_t>((static_cast<uint16_t>(result[10]) << 8) | result[11]);
+    reading.status = static_cast<uint8_t>((result[0] & 0x78) >> 3);
     reading.dataReady = true;
-    reading.valid = reading.status == 0 && reading.distanceMm > 0;
+    reading.valid = reading.status == kVl53l0xDeviceStatusRangeComplete && reading.distanceMm > 0;
     return reading;
 }
 

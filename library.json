@@ -1,6 +1,6 @@
 {
   "name": "LidarArray",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Library for managing mixed VL53L0X and VL53L4CD arrays with PCF8574 XSHUT control, sparse slot mapping, logical IDs, optional filtered reads, and native I2C debug tools.",
   "keywords": [
     "lidar",
@@ -22,6 +22,10 @@
     }
   ],
   "license": "MIT",
+  "dependencies": {
+    "pololu/VL53L0X": "*",
+    "pololu/VL53L4CD": "*"
+  },
   "frameworks": [
     "arduino"
   ],
